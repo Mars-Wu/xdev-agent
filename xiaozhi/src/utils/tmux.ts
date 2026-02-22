@@ -38,17 +38,34 @@ export class TmuxClient {
   }
 
   /**
-   * 向会话发送按键
+   * 向会话发送按键（自动添加回车）
    */
   async sendKeys(sessionName: string, keys: string): Promise<void> {
-    await this.runTmuxCommand(['send-keys', '-t', sessionName, keys, 'C-m']);
+    if (keys) {
+      await this.runTmuxCommand(['send-keys', '-t', sessionName, '-l', keys]);
+    }
+    // 发送回车
+    await this.runTmuxCommand(['send-keys', '-t', sessionName, 'Enter']);
   }
 
   /**
-   * 向会话发送原始按键（不带回车）
+   * 向会话发送原始按键（不带回车，支持特殊键名）
+   * 特殊键: C-a (Ctrl+a), M-Enter (Alt+Enter), Enter, etc.
    */
   async sendRawKeys(sessionName: string, keys: string): Promise<void> {
-    await this.runTmuxCommand(['send-keys', '-t', sessionName, keys]);
+    if (!keys) return;
+
+    // 检查是否是特殊键（以 C- 或 M- 开头，或者是已知键名）
+    const specialKeys = ['Enter', 'Escape', 'Space', 'BSpace', 'DC', 'End', 'Home', 'IC', 'NPage', 'PPage', 'Up', 'Down', 'Left', 'Right'];
+    const isSpecialKey = keys.startsWith('C-') || keys.startsWith('M-') || specialKeys.includes(keys);
+
+    if (isSpecialKey) {
+      // 特殊键直接发送，不使用 -l 标志
+      await this.runTmuxCommand(['send-keys', '-t', sessionName, keys]);
+    } else {
+      // 普通文本使用 -l 标志（字面量模式）
+      await this.runTmuxCommand(['send-keys', '-t', sessionName, '-l', keys]);
+    }
   }
 
   /**

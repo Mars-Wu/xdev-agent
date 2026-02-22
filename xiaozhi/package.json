@@ -6,7 +6,11 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:simple": "node dist/index-simple.js",
+    "start:native": "node dist/index-native.js",
     "dev": "ts-node src/index.ts",
+    "dev:simple": "ts-node src/index-simple.ts",
+    "dev:native": "ts-node src/index-native.ts",
     "watch": "tsc -w"
   },
   "keywords": ["ai", "claude", "feishu", "butler"],

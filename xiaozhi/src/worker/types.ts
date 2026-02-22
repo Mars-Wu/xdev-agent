@@ -9,6 +9,18 @@ export type WorkerStatus =
   | 'failed'
   | 'timeout';
 
+/**
+ * .worker.json 文件结构 - Worker 标识信息
+ */
+export interface WorkerIdentifier {
+  id: string;
+  name: string;
+  type: 'claude-worker';
+  createdAt: string;
+  sessionId: string;
+  status: WorkerStatus;
+}
+
 export interface WorkerTask {
   description: string;
   workDir: string;

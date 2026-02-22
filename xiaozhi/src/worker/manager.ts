@@ -34,48 +34,56 @@ export class WorkerManager {
    */
   async spawnWorker(config: WorkerSpawnConfig): Promise<ClaudeWorker> {
     const workerId = this.factory.generateWorkerId();
-    logger.info(`Creating worker ${workerId} for task: ${config.task.slice(0, 50)}...`);
+    const workerName = config.name || this.factory.generateWorkerName();
+    logger.info(`Creating worker ${workerId} (${workerName}) for task: ${config.task.slice(0, 50)}...`);
 
-    // 1. 创建Worker目录
-    await this.factory.createWorkerDirectory(workerId);
+    // 1. 创建Worker目录 (~/data/{worker-name}/)
+    await this.factory.createWorkerDirectory(workerName);
 
-    // 2. 写入Hooks配置
-    await this.factory.writeHooksConfig(workerId);
+    // 2. 写入 .worker.json 标识文件
+    await this.factory.writeWorkerIdentifier(workerId, workerName, config.sessionId, 'pending');
 
-    // 3. 写入任务描述
-    await this.factory.writeTaskDescription(workerId, config.task);
+    // 3. 写入Hooks配置
+    await this.factory.writeHooksConfig(workerId, workerName);
 
-    // 4. 创建tmux会话
+    // 4. 写入任务描述
+    await this.factory.writeTaskDescription(workerName, config.task);
+
+    // 5. 创建tmux会话
     const tmuxSession = `worker_${workerId.slice(2, 10)}`;
     await this.tmuxClient.createSession({
       name: tmuxSession,
-      cwd: config.workDir || path.join(this.config.baseDir, 'workers', workerId),
+      cwd: config.workDir || this.factory.getWorkerDir(workerName),
       detached: true,
     });
 
-    // 5. 设置环境变量
+    // 6. 设置环境变量
     await this.tmuxClient.setEnvironment(tmuxSession, {
       XIAOZHI_WORKER_ID: workerId,
+      XIAOZHI_WORKER_NAME: workerName,
       XIAOZHI_SESSION_ID: config.sessionId,
       XIAOZHI_HOST: this.config.xiaozhiHost,
       XIAOZHI_PORT: String(this.config.xiaozhiPort),
     });
 
-    // 6. 创建Worker元数据
-    const worker = this.factory.createWorkerMetadata(workerId, config, tmuxSession);
+    // 7. 创建Worker元数据
+    const worker = this.factory.createWorkerMetadata(workerId, workerName, config, tmuxSession);
     worker.status = 'running';
     worker.startedAt = new Date();
 
-    // 7. 保存到数据库和文件
+    // 8. 更新 .worker.json 状态为 running
+    await this.factory.updateWorkerStatus(workerName, 'running');
+
+    // 9. 保存到数据库和文件
     this.saveWorkerToStorage(worker);
     await this.factory.saveWorkerMeta(worker);
 
-    // 8. 构建并执行Claude命令
-    const claudeCmd = this.factory.buildClaudeCommand(workerId, config);
+    // 10. 构建并执行Claude命令
+    const claudeCmd = this.factory.buildClaudeCommand(workerName, config);
     logger.info(`Starting claude command in tmux session ${tmuxSession}`);
     await this.tmuxClient.sendKeys(tmuxSession, claudeCmd);
 
-    logger.info(`Worker ${workerId} started successfully`);
+    logger.info(`Worker ${workerId} (${workerName}) started successfully`);
     return worker;
   }
 
@@ -83,13 +91,15 @@ export class WorkerManager {
    * 获取Worker状态
    */
   async getStatus(workerId: string): Promise<ClaudeWorker | null> {
-    // 先从文件加载元数据
-    let worker = await this.factory.loadWorkerMeta(workerId);
+    // 先从数据库获取基本信息（包括name）
+    const record = this.storage.getWorker(workerId);
+    let worker: ClaudeWorker | null = null;
 
-    // 如果文件不存在，从数据库加载
-    if (!worker) {
-      const record = this.storage.getWorker(workerId);
-      if (record) {
+    if (record) {
+      // 使用worker name从文件加载完整元数据
+      worker = await this.factory.loadWorkerMeta(record.name);
+      if (!worker) {
+        // 文件不存在，使用数据库记录
         worker = this.recordToWorker(record);
       }
     }
@@ -105,6 +115,7 @@ export class WorkerManager {
       worker.status = 'completed';
       worker.completedAt = new Date();
       await this.factory.saveWorkerMeta(worker);
+      await this.factory.updateWorkerStatus(worker.name, 'completed');
     }
 
     // 读取进度文件
@@ -118,7 +129,7 @@ export class WorkerManager {
 
     // 统计操作日志
     try {
-      const workerDir = path.join(this.config.baseDir, 'workers', workerId);
+      const workerDir = this.factory.getWorkerDir(worker.name);
       const logContent = await fs.readFile(
         path.join(workerDir, 'actions.log'),
         'utf-8'
@@ -159,7 +170,7 @@ export class WorkerManager {
       return;
     }
 
-    logger.info(`Terminating worker ${workerId} (force: ${force})`);
+    logger.info(`Terminating worker ${workerId} (${worker.name}) (force: ${force})`);
 
     if (await this.tmuxClient.sessionExists(worker.tmuxSession)) {
       if (force) {
@@ -179,6 +190,7 @@ export class WorkerManager {
     worker.status = 'completed';
     worker.completedAt = new Date();
     await this.factory.saveWorkerMeta(worker);
+    await this.factory.updateWorkerStatus(worker.name, 'completed');
     this.storage.updateWorkerStatus(
       workerId,
       'completed',
@@ -200,11 +212,17 @@ export class WorkerManager {
       completedAt?: Date;
     }
   ): Promise<void> {
-    const worker = await this.factory.loadWorkerMeta(workerId);
+    // 从数据库获取worker name
+    const record = this.storage.getWorker(workerId);
+    if (!record) return;
+
+    const worker = await this.factory.loadWorkerMeta(record.name);
     if (!worker) return;
 
     if (updates.status) {
       worker.status = updates.status;
+      // 同步更新 .worker.json
+      await this.factory.updateWorkerStatus(record.name, updates.status);
     }
     if (updates.result) {
       worker.result = updates.result;

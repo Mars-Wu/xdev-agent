@@ -19,8 +19,7 @@ const DEFAULT_TIMEOUT = 120000; // 2分钟
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 1000; // 1秒
 
-// 小智专用的工作目录和UUID（使用不同的UUID避免与Claude Code冲突）
-const XIAOZHI_WORKSPACE = path.join(os.homedir(), '.xiaozhi', 'workspace');
+// 小智专用的UUID（使用不同的UUID避免与其他Claude会话冲突）
 const XIAOZHI_SESSION_UUID = '0565a73b-7e6e-44c3-9d66-a51107e718ca';
 
 // 系统提示词文件路径
@@ -48,10 +47,6 @@ const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 - 可以执行 shell 命令、读写文件、管理进程
 - 可以分析、讨论、回答问题
 - 可以帮助用户完成各种系统管理任务
-
-## 工作目录
-- 你的工作目录在 ~/.xiaozhi/workspace
-- 可以使用 --add-dir 访问其他目录
 
 ## 回复风格
 - 简洁友好，直接回答
@@ -97,7 +92,6 @@ export interface SessionStats {
 export interface ClaudeNativeAgentConfig {
   feishuClient: FeishuClient;
   model?: string;
-  workspace?: string;
   sessionUuid?: string;
   // 新增配置
   compactThreshold?: number;  // 触发压缩的文件大小阈值
@@ -113,7 +107,6 @@ export type SessionHealth = 'healthy' | 'needs_compact' | 'corrupted' | 'not_fou
 export class ClaudeNativeAgent {
   private feishuClient: FeishuClient;
   private model: string;
-  private workspace: string;
   private sessionUuid: string;
   private isProcessing: boolean = false;
 
@@ -133,7 +126,6 @@ export class ClaudeNativeAgent {
   constructor(config: ClaudeNativeAgentConfig) {
     this.feishuClient = config.feishuClient;
     this.model = config.model || 'claude-sonnet-4-5-20250929';
-    this.workspace = config.workspace || XIAOZHI_WORKSPACE;
     this.sessionUuid = config.sessionUuid || XIAOZHI_SESSION_UUID;
 
     // 新增配置初始化
@@ -146,19 +138,15 @@ export class ClaudeNativeAgent {
 
   /**
    * 启动 Agent
-   * - 创建工作目录
    * - 写入系统提示词
    * - 检查会话状态
    */
   async start(): Promise<void> {
     logger.info('Claude Native Agent 启动中...');
 
-    // 创建工作目录
-    await fs.mkdir(this.workspace, { recursive: true });
-
-    // 创建 .claude 目录（确保会话存储在此项目下）
-    const claudeDir = path.join(this.workspace, '.claude');
-    await fs.mkdir(claudeDir, { recursive: true });
+    // 创建小智配置目录
+    const xiaozhiDir = path.join(os.homedir(), '.xiaozhi');
+    await fs.mkdir(xiaozhiDir, { recursive: true });
 
     // 写入系统提示词
     await this.writeSystemPrompt();
@@ -468,15 +456,13 @@ export class ClaudeNativeAgent {
         '--output-format', 'stream-json',
         '--model', this.model,
         '--session-id', this.sessionUuid,
-        // 在小智工作目录运行，会话存储在此项目下
-        '--add-dir', this.workspace,
       ];
 
       logger.info(`调用 Claude，session: ${this.sessionUuid}`);
       logger.debug(`消息内容: ${userMessage.slice(0, 100)}...`);
 
       const proc = spawn('claude', args, {
-        cwd: this.workspace,  // 在工作目录执行
+        cwd: os.homedir(),  // 在用户主目录执行，可访问整个系统
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -733,7 +719,8 @@ export class ClaudeNativeAgent {
    */
   private getSessionFilePath(): string {
     // Claude 会话存储在 ~/.claude/projects/<project-hash>/<session-id>.jsonl
-    const projectHash = this.workspace.replace(/\//g, '-').replace(/^-/, '');
+    // 使用用户主目录作为项目路径
+    const projectHash = os.homedir().replace(/\//g, '-').replace(/^-/, '');
     return path.join(
       os.homedir(),
       '.claude',
@@ -744,11 +731,11 @@ export class ClaudeNativeAgent {
   }
 
   /**
-   * 写入系统提示词到工作目录
+   * 写入系统提示词到用户主目录
    * Claude CLI 会读取 CLAUDE.md 作为项目说明
    */
   private async writeSystemPrompt(): Promise<void> {
-    const claudeMdPath = path.join(this.workspace, 'CLAUDE.md');
+    const claudeMdPath = path.join(os.homedir(), 'CLAUDE.md');
 
     // 检查是否有自定义系统提示词文件
     let systemPrompt = DEFAULT_SYSTEM_PROMPT;

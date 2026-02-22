@@ -1,88 +1,138 @@
-// src/index.ts
-// AI管家小智 - 入口文件
+// src/index-native.ts
+// AI管家小智 - 原生版入口
+// 最大化利用 Claude CLI 的原生功能
+//
+// 架构特点:
+// 1. 使用 --session-id 让 Claude CLI 自己管理会话持久化
+// 2. 会话存储在 ~/.claude/projects/<hash>/<session-id>.jsonl
+// 3. 支持 /compact、/stats、/health、/reset 命令
+// 4. 自动检测会话健康状态并在需要时提示用户
 
 import 'dotenv/config';
-import * as path from 'path';
-import { XiaoZhiService } from './core/xiaozhi';
+import { FeishuClient } from './feishu/client';
+import { ClaudeNativeAgent } from './core/claude-native-agent';
 import { HooksReceiver } from './worker/hooks-receiver';
-import { MessageHandler } from './core/message-handler';
-import { createLogger, setLogLevel } from './utils/logger';
+import { WorkerManager } from './worker/manager';
+import { SessionManager } from './session/manager';
+import { SQLiteStorage } from './storage/sqlite';
+import { createLogger } from './utils/logger';
+import * as path from 'path';
+import * as os from 'os';
 
 const logger = createLogger('main');
 
 async function main() {
-  logger.info('AI管家小智启动中...');
+  logger.info('AI管家小智启动中 (原生架构)...');
+  logger.info('==========================================');
+  logger.info('架构: spawn + --session-id 原生持久化');
+  logger.info('==========================================');
 
-  // 检查必要的环境变量
-  const requiredEnvVars = ['FEISHU_APP_ID', 'FEISHU_APP_SECRET'];
-  const missing = requiredEnvVars.filter((v) => !process.env[v]);
-  if (missing.length > 0) {
-    logger.error(`缺少必要的环境变量: ${missing.join(', ')}`);
-    logger.error('请设置以下环境变量或创建 .env 文件:');
-    logger.error('  FEISHU_APP_ID=your_app_id');
-    logger.error('  FEISHU_APP_SECRET=your_app_secret');
-    process.exit(1);
-  }
-
-  // 设置日志级别
-  setLogLevel((process.env.LOG_LEVEL as any) || 'info');
-
-  // 获取配置
-  const xiaozhiHome = process.env.XIAOZHI_HOME || '/var/lib/xiaozhi';
+  const xiaozhiHome = process.env.XIAOZHI_HOME || path.join(os.homedir(), '.xiaozhi');
   const hooksPort = parseInt(process.env.XIAOZHI_HOOKS_PORT || '8081');
 
-  // 1. 初始化小智服务
-  const xiaozhi = new XiaoZhiService({
-    model: process.env.XIAOZHI_MODEL || 'claude-sonnet-4-5-20250929',
-    storage: {
-      type: 'sqlite',
-      path: process.env.XIAOZHI_DB || path.join(xiaozhiHome, 'data', 'xiaozhi.db'),
-    },
-    feishu: {
-      appId: process.env.FEISHU_APP_ID!,
-      appSecret: process.env.FEISHU_APP_SECRET!,
-      useWebSocket: process.env.FEISHU_USE_WEBSOCKET !== 'false',
-    },
-    worker: {
-      baseDir: xiaozhiHome,
-      scriptsDir: path.join(xiaozhiHome, 'scripts'),
-      hooksPort,
-    },
+  // 配置参数（可通过环境变量覆盖）
+  const config = {
+    // 压缩阈值：会话文件超过此大小时提示用户压缩
+    compactThreshold: parseInt(process.env.XIAOZHI_COMPACT_THRESHOLD || '') || 5 * 1024 * 1024, // 5MB
+
+    // 请求超时：单次 Claude 调用的最长等待时间
+    timeout: parseInt(process.env.XIAOZHI_TIMEOUT || '') || 120000, // 2分钟
+
+    // 重试次数：失败后自动重试的最大次数
+    maxRetries: parseInt(process.env.XIAOZHI_MAX_RETRIES || '') || 3,
+
+    // 重试延迟：指数退避的基数（ms）
+    retryDelay: parseInt(process.env.XIAOZHI_RETRY_DELAY || '') || 1000, // 1秒
+
+    // 自动压缩：是否在超过阈值时自动压缩（默认 false，提示用户手动处理）
+    autoCompact: process.env.XIAOZHI_AUTO_COMPACT === 'true',
+  };
+
+  logger.info('配置参数:');
+  logger.info(`  - 压缩阈值: ${formatBytes(config.compactThreshold)}`);
+  logger.info(`  - 请求超时: ${config.timeout / 1000}s`);
+  logger.info(`  - 最大重试: ${config.maxRetries} 次`);
+  logger.info(`  - 自动压缩: ${config.autoCompact ? '开启' : '关闭'}`);
+
+  // 1. 飞书客户端
+  const feishuClient = new FeishuClient({
+    appId: process.env.FEISHU_APP_ID!,
+    appSecret: process.env.FEISHU_APP_SECRET!,
+    useWebSocket: true,
   });
 
-  // 2. 初始化消息处理器
-  const messageHandler = new MessageHandler(
-    xiaozhi.feishuClientPublic,
-    xiaozhi.sessionManagerPublic,
-    xiaozhi.workerManagerPublic
-  );
+  // 2. Worker 相关组件（处理复杂任务）
+  const storage = new SQLiteStorage(path.join(xiaozhiHome, 'xiaozhi.db'));
+  const sessionManager = new SessionManager(storage, { maxContextMessages: 50, compressThreshold: 40 });
+  const workerManager = new WorkerManager(storage, {
+    baseDir: path.join(xiaozhiHome, 'workers'),
+    scriptsDir: path.join(xiaozhiHome, 'scripts'),
+    xiaozhiHost: 'localhost',
+    xiaozhiPort: hooksPort,
+  });
 
-  // 3. 启动Hooks接收器（接收Worker通知）
-  const hooksReceiver = new HooksReceiver(
-    xiaozhi.workerManagerPublic,
-    xiaozhi.feishuClientPublic,
-    xiaozhi.sessionManagerPublic
-  );
+  // 3. Hooks 接收器
+  const hooksReceiver = new HooksReceiver(workerManager, feishuClient, sessionManager);
   hooksReceiver.listen(hooksPort);
-  logger.info(`Hooks接收器已启动，监听端口 ${hooksPort}`);
+  logger.info(`Hooks接收器已启动，端口 ${hooksPort}`);
 
-  // 4. 启动飞书连接（开始接收用户消息）
-  await xiaozhi.start();
+  // 4. Claude Agent（核心！）
+  const agent = new ClaudeNativeAgent({
+    feishuClient,
+    model: process.env.XIAOZHI_MODEL,
+    workspace: path.join(xiaozhiHome, 'workspace'),
+    sessionUuid: process.env.XIAOZHI_SESSION_UUID || '0565a73b-7e6e-44c3-9d66-a51107e718ca',
+    // 新增配置
+    compactThreshold: config.compactThreshold,
+    timeout: config.timeout,
+    maxRetries: config.maxRetries,
+    retryDelay: config.retryDelay,
+    autoCompact: config.autoCompact,
+  });
+
+  // 5. 消息处理
+  feishuClient.setMessageHandler(async (msg) => {
+    await agent.handleMessage(msg);
+  });
+
+  // 6. 启动
+  await agent.start();
+  await feishuClient.start();
+
   logger.info('飞书连接已建立，小智开始工作');
+  logger.info('==========================================');
+  logger.info('可用命令:');
+  logger.info('  /compact  - 压缩会话上下文');
+  logger.info('  /stats    - 查看会话统计');
+  logger.info('  /health   - 健康检查');
+  logger.info('  /reset    - 重置会话');
+  logger.info('==========================================');
+  logger.info('AI管家小智已就绪');
 
-  // 5. 优雅关闭
+  // 优雅关闭
   const shutdown = async (signal: string) => {
-    logger.info(`收到${signal}信号，正在关闭...`);
+    logger.info(`收到${signal}，正在关闭...`);
     hooksReceiver.close();
-    await xiaozhi.stop();
+    await agent.stop();
+    await feishuClient.stop();
+    storage.close();
     logger.info('AI管家小智已停止');
     process.exit(0);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
-  logger.info('AI管家小智已就绪 ✅');
+/**
+ * 格式化字节数
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
 main().catch((error) => {

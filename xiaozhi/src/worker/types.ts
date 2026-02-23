@@ -24,7 +24,7 @@ export interface WorkerIdentifier {
 export interface WorkerTask {
   description: string;
   workDir: string;
-  model: 'sonnet' | 'opus' | 'haiku';
+  model: string;  // 模型名称，如 'glm-5', 'sonnet', 'opus', 'haiku' 等
   timeout?: number;
   maxTurns?: number;
   maxBudget?: number;
@@ -75,10 +75,11 @@ export interface WorkerSpawnConfig {
   name?: string;
   task: string;
   workDir?: string;
-  model?: 'sonnet' | 'opus' | 'haiku';
+  model?: string;  // 模型名称，如 'glm-5', 'sonnet', 'opus', 'haiku' 等
   timeout?: number;
   maxTurns?: number;
   maxBudget?: number;
+  customPrompt?: string;  // 小智生成的自定义 prompt
 }
 
 export interface WorkerManagerConfig {

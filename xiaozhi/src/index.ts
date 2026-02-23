@@ -80,7 +80,6 @@ async function main() {
   const agent = new ClaudeNativeAgent({
     feishuClient,
     model: process.env.XIAOZHI_MODEL,
-    sessionUuid: process.env.XIAOZHI_SESSION_UUID,
     // 配置
     compactThreshold: config.compactThreshold,
     timeout: config.timeout,

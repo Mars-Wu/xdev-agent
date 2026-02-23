@@ -49,6 +49,14 @@ export class WorkerManager {
     // 4. 写入任务描述
     await this.factory.writeTaskDescription(workerName, config.task);
 
+    // 4.5 写入 Worker 专属的 CLAUDE.md（支持自定义 prompt）
+    await this.factory.writeWorkerPrompt(workerName, config.task, config.customPrompt);
+
+    // 4.6 如果指定了 workDir，在项目目录创建 CLAUDE.md 符号链接
+    if (config.workDir) {
+      await this.factory.linkClaudeMdToProject(workerName, config.workDir);
+    }
+
     // 5. 创建tmux会话
     const tmuxSession = `worker_${workerId.slice(2, 10)}`;
     await this.tmuxClient.createSession({

@@ -37,34 +37,42 @@ export class HooksReceiver {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
-    // 接收Notification Hook
-    this.app.post('/internal/worker/notify', this.handleNotification.bind(this));
+    // 接收Notification Hook（Worker 进度通知）
+    this.app.post('/hooks/notification', this.handleNotification.bind(this));
 
-    // 接收Stop Hook
-    this.app.post('/internal/worker/complete', this.handleComplete.bind(this));
+    // 接收Stop Hook（Worker 完成）
+    this.app.post('/hooks/stop', this.handleComplete.bind(this));
 
     // 接收SubagentStop Hook
-    this.app.post('/internal/worker/subagent', this.handleSubagent.bind(this));
+    this.app.post('/hooks/subagent-stop', this.handleSubagent.bind(this));
   }
 
   private async handleNotification(req: Request, res: Response): Promise<void> {
-    const { worker_id, type, message, timestamp } = req.body;
+    // 支持多种字段名格式
+    const workerId = req.body.worker_id || req.body.workerId;
+    const message = req.body.message || req.body.notification || '处理中';
+    const timestamp = req.body.timestamp;
 
-    logger.info(`Received notification from worker ${worker_id}: ${message?.slice(0, 50)}...`);
+    logger.info(`Received notification from worker ${workerId}: ${message?.slice(0, 50)}...`);
+
+    if (!workerId) {
+      res.status(400).send('Missing worker_id');
+      return;
+    }
 
     try {
-      const worker = await this.workerManager.getStatus(worker_id);
+      const worker = await this.workerManager.getStatus(workerId);
       if (!worker) {
         res.status(404).send('Worker not found');
         return;
       }
 
       // 更新进度
-      worker.progress.currentStep = message || '处理中';
-      worker.progress.lastUpdate = new Date(timestamp);
+      worker.progress.currentStep = message;
+      worker.progress.lastUpdate = new Date(timestamp || Date.now());
 
       // 检查是否应该节流通知
-      if (this.shouldThrottleNotification(worker_id)) {
+      if (this.shouldThrottleNotification(workerId)) {
         res.send('OK (throttled)');
         return;
       }
@@ -90,7 +98,7 @@ export class HooksReceiver {
         ],
       });
 
-      this.notificationThrottle.set(worker_id, Date.now());
+      this.notificationThrottle.set(workerId, Date.now());
       res.send('OK');
     } catch (error) {
       logger.error('Handle notification error:', error);
@@ -99,23 +107,33 @@ export class HooksReceiver {
   }
 
   private async handleComplete(req: Request, res: Response): Promise<void> {
-    const { worker_id, status, result, cost, duration } = req.body;
+    // 支持多种字段名格式
+    const workerId = req.body.worker_id || req.body.workerId;
+    const status = req.body.status || req.body.result || 'completed';
+    const result = req.body.result || req.body.summary || '任务完成';
+    const cost = req.body.cost || req.body.cost_usd || 0;
+    const duration = req.body.duration || req.body.duration_ms || 0;
 
-    logger.info(`Received completion from worker ${worker_id}, status: ${status}`);
+    logger.info(`Received completion from worker ${workerId}, status: ${status}`);
+
+    if (!workerId) {
+      res.status(400).send('Missing worker_id');
+      return;
+    }
 
     try {
-      const worker = await this.workerManager.getStatus(worker_id);
+      const worker = await this.workerManager.getStatus(workerId);
       if (!worker) {
         res.status(404).send('Worker not found');
         return;
       }
 
       // 更新Worker状态
-      await this.workerManager.updateStatus(worker_id, {
-        status: status === 'success' ? 'completed' : 'failed',
+      await this.workerManager.updateStatus(workerId, {
+        status: status === 'success' || status === 'completed' ? 'completed' : 'failed',
         completedAt: new Date(),
         result: {
-          success: status === 'success',
+          success: status === 'success' || status === 'completed',
           summary: result || '任务完成',
           cost: cost || 0,
           duration: duration || 0,
@@ -123,21 +141,21 @@ export class HooksReceiver {
       });
 
       // 从会话的活跃Worker列表中移除
-      await this.sessionManager.removeWorker(worker.sessionId, worker_id);
+      await this.sessionManager.removeWorker(worker.sessionId, workerId);
 
       // 获取会话并发送完成通知
       const session = await this.sessionManager.get(worker.sessionId);
       if (session) {
-        const emoji = status === 'success' ? '✅' : '❌';
+        const emoji = status === 'success' || status === 'completed' ? '✅' : '❌';
         await this.feishuClient.sendCard(session.feishuChatId, {
           header: {
             title: { content: `${emoji} ${worker.name} 任务完成`, tag: 'plain_text' },
-            template: status === 'success' ? 'green' : 'red',
+            template: status === 'success' || status === 'completed' ? 'green' : 'red',
           },
           elements: [
             {
               tag: 'markdown',
-              content: `**状态**: ${status === 'success' ? '成功' : '失败'}\n**耗时**: ${this.formatDuration(worker.startedAt!, new Date())}\n**结果**:\n${result || '无详细结果'}`,
+              content: `**状态**: ${status === 'success' || status === 'completed' ? '成功' : '失败'}\n**耗时**: ${this.formatDuration(worker.startedAt!, new Date())}\n**结果**:\n${result || '无详细结果'}`,
             },
           ],
         });
@@ -151,12 +169,15 @@ export class HooksReceiver {
   }
 
   private async handleSubagent(req: Request, res: Response): Promise<void> {
-    const { worker_id, subagent_id, subagent_type, result } = req.body;
+    const workerId = req.body.worker_id || req.body.workerId;
+    const subagentId = req.body.subagent_id || req.body.subagentId;
+    const subagentType = req.body.subagent_type || req.body.subagentType;
+    const result = req.body.result;
 
-    logger.info(`Received subagent notification: ${subagent_type} for worker ${worker_id}`);
+    logger.info(`Received subagent notification: ${subagentType} for worker ${workerId}`);
 
     // 子代理完成，可选通知（这里只记录日志）
-    logger.debug(`Subagent ${subagent_type} (${subagent_id}) completed for worker ${worker_id}`);
+    logger.debug(`Subagent ${subagentType} (${subagentId}) completed for worker ${workerId}`);
 
     res.send('OK');
   }

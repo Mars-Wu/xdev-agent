@@ -1,17 +1,35 @@
 // src/feishu/client.ts
 // 飞书客户端封装
+// 支持自动重连机制
 
 import * as lark from '@larksuiteoapi/node-sdk';
 import { FeishuConfig, FeishuMessage, FeishuReply, MessageCard } from './types';
 
+// 重连配置
+const RECONNECT_CONFIG = {
+  maxRetries: 10,           // 最大重连次数
+  initialDelay: 1000,       // 初始重连延迟 (ms)
+  maxDelay: 30000,          // 最大重连延迟 (ms)
+  backoffFactor: 2,         // 退避因子
+};
+
 export class FeishuClient {
   private client: lark.Client;
   private wsClient?: lark.WSClient;
+  private config: FeishuConfig;
   private messageHandler?: (msg: FeishuMessage) => Promise<void>;
   private processedMessages: Set<string> = new Set();
   private readonly MESSAGE_CACHE_SIZE = 1000;
 
+  // 重连状态
+  private isReconnecting: boolean = false;
+  private reconnectAttempts: number = 0;
+  private currentDelay: number = RECONNECT_CONFIG.initialDelay;
+  private reconnectTimer?: NodeJS.Timeout;
+  private isShuttingDown: boolean = false;
+
   constructor(config: FeishuConfig) {
+    this.config = config;
     this.client = new lark.Client({
       appId: config.appId,
       appSecret: config.appSecret,
@@ -19,11 +37,14 @@ export class FeishuClient {
       domain: lark.Domain.Feishu,
     });
 
-    // 长连接模式（开发推荐）
-    if (config.useWebSocket !== false) {
+    this.initWebSocket();
+  }
+
+  private initWebSocket(): void {
+    if (this.config.useWebSocket !== false) {
       this.wsClient = new lark.WSClient({
-        appId: config.appId,
-        appSecret: config.appSecret,
+        appId: this.config.appId,
+        appSecret: this.config.appSecret,
         loggerLevel: lark.LoggerLevel.info,
       });
     }
@@ -35,6 +56,17 @@ export class FeishuClient {
 
   async start(): Promise<void> {
     if (this.wsClient) {
+      await this.connectWithRetry();
+    }
+  }
+
+  /**
+   * 带重试的 WebSocket 连接
+   */
+  private async connectWithRetry(): Promise<void> {
+    if (this.isShuttingDown) return;
+
+    try {
       const eventDispatcher = new lark.EventDispatcher({}).register({
         'im.message.receive_v1': async (data) => {
           if (this.messageHandler) {
@@ -70,15 +102,69 @@ export class FeishuClient {
         },
       });
 
-      await this.wsClient.start({ eventDispatcher });
-      console.log('Feishu WebSocket client started');
+      // WSClient 可能不支持事件监听，使用包装方式处理
+      // 如果连接失败或断开，start() 会抛出异常
+      await this.wsClient!.start({ eventDispatcher });
+
+      // 连接成功，重置重连状态
+      this.reconnectAttempts = 0;
+      this.currentDelay = RECONNECT_CONFIG.initialDelay;
+      this.isReconnecting = false;
+
+      console.log('[Feishu] WebSocket client started');
+    } catch (error) {
+      console.error('[Feishu] 连接失败:', error);
+      this.handleDisconnect();
     }
   }
 
+  /**
+   * 处理连接断开
+   */
+  private handleDisconnect(): void {
+    if (this.isShuttingDown || this.isReconnecting) return;
+
+    this.isReconnecting = true;
+
+    if (this.reconnectAttempts >= RECONNECT_CONFIG.maxRetries) {
+      console.error(`[Feishu] 已达到最大重连次数 (${RECONNECT_CONFIG.maxRetries})，停止重连`);
+      this.isReconnecting = false;
+      return;
+    }
+
+    this.reconnectAttempts++;
+    console.log(`[Feishu] 将在 ${this.currentDelay}ms 后进行第 ${this.reconnectAttempts} 次重连...`);
+
+    this.reconnectTimer = setTimeout(async () => {
+      console.log(`[Feishu] 开始第 ${this.reconnectAttempts} 次重连...`);
+
+      // 重新创建 WSClient 实例
+      this.initWebSocket();
+
+      try {
+        await this.connectWithRetry();
+      } catch (error) {
+        console.error(`[Feishu] 第 ${this.reconnectAttempts} 次重连失败:`, error);
+      }
+
+      // 指数退避
+      this.currentDelay = Math.min(
+        this.currentDelay * RECONNECT_CONFIG.backoffFactor,
+        RECONNECT_CONFIG.maxDelay
+      );
+    }, this.currentDelay);
+  }
+
   async stop(): Promise<void> {
-    // WSClient does not have a stop method in this SDK version
-    // The connection will be closed when the process exits
-    console.log('Feishu WebSocket client stopping');
+    this.isShuttingDown = true;
+
+    // 清除重连定时器
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
+    console.log('[Feishu] WebSocket client stopping');
   }
 
   async sendMessage(chatId: string, reply: FeishuReply): Promise<void> {

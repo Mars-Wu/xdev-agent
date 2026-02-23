@@ -1,12 +1,13 @@
 // src/core/claude-native-agent.ts
 // Claude Agent - 最大化利用 Claude CLI 原生功能
-// 使用 --session-id 让 Claude CLI 自己管理会话持久化
+// 使用独立工作目录 + --continue 让 Claude CLI 自己管理会话持久化
 // 增强版本：支持 auto-compact 检测、错误重试、会话恢复
 
 import { spawn } from 'child_process';
 import { FeishuClient } from '../feishu/client';
 import { FeishuMessage } from '../feishu/types';
 import { createLogger } from '../utils/logger';
+import { getDefaultModel } from '../config';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -18,12 +19,15 @@ const DEFAULT_COMPACT_THRESHOLD = 5 * 1024 * 1024; // 5MB
 const DEFAULT_TIMEOUT = 120000; // 2分钟
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 1000; // 1秒
+const DEFAULT_LOCK_TIMEOUT = 30000; // 锁超时时间 30秒
 
-// 小智专用的UUID（使用不同的UUID避免与其他Claude会话冲突）
-const XIAOZHI_SESSION_UUID = '0565a73b-7e6e-44c3-9d66-a51107e718ca';
+// 小智配置目录和专用工作目录
+const XIAOZHI_DIR = path.join(os.homedir(), '.xiaozhi');
+const XIAOZHI_WORKSPACE = path.join(XIAOZHI_DIR, 'workspace');  // 独立工作目录，用于会话持久化
+const LOCKS_DIR = path.join(XIAOZHI_DIR, 'locks');  // 锁文件目录
 
 // 系统提示词文件路径
-const SYSTEM_PROMPT_FILE = path.join(os.homedir(), '.xiaozhi', 'system-prompt.md');
+const SYSTEM_PROMPT_FILE = path.join(XIAOZHI_DIR, 'system-prompt.md');
 
 const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 
@@ -48,6 +52,118 @@ const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 - **创建 Worker 前必须告知用户**，说明任务内容和预计时间
 - 用户确认后再创建 Worker
 - 可以同时运行多个 Worker 处理不同任务
+
+## Worker 管理能力
+
+你可以使用 \`xiaozhi-worker\` 命令创建 AI Worker 来处理长时间任务：
+
+### 创建 Worker
+\`\`\`bash
+xiaozhi-worker create "任务描述" [--model <模型名>] [--timeout 600] [--work-dir /path/to/dir] [--prompt "自定义prompt"]
+\`\`\`
+
+**注意**: \`--model\` 默认使用 \`~/.claude/settings.json\` 中配置的 \`ANTHROPIC_MODEL\`。
+
+示例：
+\`\`\`bash
+# 基本创建（使用默认模型）
+xiaozhi-worker create "分析日志文件"
+
+# 指定工作目录
+xiaozhi-worker create "分析项目结构" --work-dir /home/wxy/myproject
+
+# 指定超时和最大轮数
+xiaozhi-worker create "重构代码" --timeout 600 --max-turns 50
+
+# 使用自定义 prompt（推荐用于复杂任务）
+xiaozhi-worker create "分析日志" --prompt "# 日志分析专家\\n\\n你是一个专注于日志分析的 AI..."
+\`\`\`
+
+### 查看 Worker 状态
+\`\`\`bash
+xiaozhi-worker list              # 列出所有 Worker
+xiaozhi-worker list --all        # 包括已完成的
+xiaozhi-worker status <id>       # 查看特定 Worker 状态
+\`\`\`
+
+### 停止 Worker
+\`\`\`bash
+xiaozhi-worker stop <id>         # 优雅停止（发送 Ctrl+C）
+xiaozhi-worker stop <id> --force # 强制终止
+\`\`\`
+
+### 使用规则
+1. 创建 Worker 前必须告知用户，说明任务内容和预期时间
+2. Worker 在独立的 tmux 会话中运行
+3. Worker 完成后会自动通知你
+4. Worker 元数据目录：~/.xiaozhi/workers/<worker-name>/
+
+### 项目目录工作模式
+
+当使用 \`--work-dir\` 指定项目目录时（推荐用于编程任务）：
+1. Worker 直接在项目目录中运行（tmux cwd = 项目目录）
+2. 项目目录会自动创建 \`CLAUDE.md\` 符号链接，指向 Worker 的专属配置
+3. Worker 可以直接操作项目文件，无需绝对路径
+4. 如果项目已有 \`CLAUDE.md\`，会自动备份为 \`CLAUDE.md.backup-<timestamp>\`
+
+目录结构示例：
+\`\`\`
+~/.xiaozhi/workers/worker-2024-01-01/
+├── CLAUDE.md          # Worker 的身份和任务定义（实际文件）
+├── output.log         # 执行日志
+└── result.md          # 结果输出
+
+~/data/my-project/     # 项目目录
+├── CLAUDE.md          # 符号链接 -> ~/.xiaozhi/workers/worker-2024-01-01/CLAUDE.md
+├── src/               # 项目源码
+└── package.json       # 项目配置
+\`\`\`
+
+### 为 Worker 生成专属 Prompt
+
+**重要**: 对于复杂任务，你应该为 Worker 生成专门的 prompt，而不是使用默认的。
+
+生成 Worker prompt 的原则：
+1. **明确角色定位**: 定义 Worker 的专业身份（如"代码审查专家"、"日志分析师"）
+2. **具体任务说明**: 详细描述任务目标、范围和预期输出
+3. **领域知识注入**: 提供任务所需的专业知识、规则或最佳实践
+4. **输出格式要求**: 明确结果的格式和内容要求
+5. **限制条件**: 说明不应该做的事情
+
+示例 prompt 模板：
+\`\`\`
+# [角色名称]
+
+你是小智创建的 [专业角色]，专注于 [任务类型]。
+
+## 专业能力
+- [能力1]
+- [能力2]
+
+## 当前任务
+[详细任务描述]
+
+## 工作流程
+1. [步骤1]
+2. [步骤2]
+
+## 输出要求
+- [要求1]
+- [要求2]
+
+## 注意事项
+- [限制1]
+- [限制2]
+\`\`\`
+
+使用 --prompt 参数传入（注意转义引号）：
+\`\`\`bash
+xiaozhi-worker create "任务" --prompt "$(cat <<'EOF'
+# 你的 prompt 内容
+...
+EOF
+)"
+\`\`\`
 
 ## 系统监控
 - 你应该监控系统资源：网络使用、硬盘使用、内存使用
@@ -112,7 +228,6 @@ export interface SessionStats {
 export interface ClaudeNativeAgentConfig {
   feishuClient: FeishuClient;
   model?: string;
-  sessionUuid?: string;
   // 新增配置
   compactThreshold?: number;  // 触发压缩的文件大小阈值
   timeout?: number;           // 单次请求超时时间
@@ -127,7 +242,6 @@ export type SessionHealth = 'healthy' | 'needs_compact' | 'corrupted' | 'not_fou
 export class ClaudeNativeAgent {
   private feishuClient: FeishuClient;
   private model: string;
-  private sessionUuid: string;
   private isProcessing: boolean = false;
 
   // 新增配置
@@ -145,10 +259,9 @@ export class ClaudeNativeAgent {
 
   constructor(config: ClaudeNativeAgentConfig) {
     this.feishuClient = config.feishuClient;
-    this.model = config.model || 'glm-5';
-    this.sessionUuid = config.sessionUuid || XIAOZHI_SESSION_UUID;
+    this.model = config.model || getDefaultModel();
 
-    // 新增配置初始化
+    // 配置初始化
     this.compactThreshold = config.compactThreshold || DEFAULT_COMPACT_THRESHOLD;
     this.timeout = config.timeout || DEFAULT_TIMEOUT;
     this.maxRetries = config.maxRetries || DEFAULT_MAX_RETRIES;
@@ -158,36 +271,20 @@ export class ClaudeNativeAgent {
 
   /**
    * 启动 Agent
+   * - 创建独立工作目录
    * - 写入系统提示词
-   * - 检查会话状态
    */
   async start(): Promise<void> {
     logger.info('Claude Native Agent 启动中...');
 
-    // 创建小智配置目录
-    const xiaozhiDir = path.join(os.homedir(), '.xiaozhi');
-    await fs.mkdir(xiaozhiDir, { recursive: true });
+    // 创建小智配置目录和独立工作目录
+    await fs.mkdir(XIAOZHI_DIR, { recursive: true });
+    await fs.mkdir(XIAOZHI_WORKSPACE, { recursive: true });
 
-    // 写入系统提示词
+    // 写入系统提示词到工作目录
     await this.writeSystemPrompt();
 
-    // 检查会话状态
-    const sessionExists = await this.checkSessionExists();
-    if (sessionExists) {
-      logger.info(`发现已有会话: ${this.sessionUuid}，将继续使用`);
-
-      // 检查会话健康状态
-      const health = await this.checkSessionHealth();
-      if (health === 'corrupted') {
-        logger.warn('会话可能已损坏，尝试恢复...');
-        await this.recoverSession();
-      } else if (health === 'needs_compact') {
-        logger.info('会话需要压缩，建议用户使用 /compact 命令');
-      }
-    } else {
-      logger.info(`将创建新会话: ${this.sessionUuid}`);
-    }
-
+    logger.info(`工作目录: ${XIAOZHI_WORKSPACE}`);
     logger.info('Claude Native Agent 已就绪');
   }
 
@@ -233,6 +330,14 @@ export class ClaudeNativeAgent {
     this.isProcessing = true;
     const startTime = Date.now();
 
+    // 超时自动重置保护（5分钟）
+    const safetyTimer = setTimeout(() => {
+      if (this.isProcessing) {
+        logger.warn('isProcessing 超时自动重置');
+        this.isProcessing = false;
+      }
+    }, 5 * 60 * 1000);
+
     // 进度提示
     let progressSent = false;
     const progressTimer = setTimeout(async () => {
@@ -242,7 +347,7 @@ export class ClaudeNativeAgent {
         await this.feishuClient.sendMessage(msg.chatId, {
           content: `⏳ 思考中... (${elapsed}s)`,
           type: 'text',
-        });
+        }).catch(() => {}); // 忽略发送失败
       }
     }, 8000);
 
@@ -275,12 +380,28 @@ export class ClaudeNativeAgent {
     } catch (error) {
       logger.error('处理失败:', error);
       clearTimeout(progressTimer);
-      await this.feishuClient.sendMessage(msg.chatId, {
-        content: '抱歉，处理出错。请重试。',
-        type: 'text',
-      });
+
+      // 提取错误信息
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const shortError = errorMessage.slice(0, 200);  // 限制长度
+
+      try {
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: `处理出错: ${shortError}\n\n请稍后重试，或发送 /health 检查状态。`,
+          type: 'text',
+        });
+      } catch (sendError) {
+        logger.error('发送错误消息失败:', sendError);
+      }
     } finally {
-      this.isProcessing = false;
+      clearTimeout(safetyTimer);
+      // 确保 isProcessing 被重置，即使 finally 块中发生异常
+      try {
+        this.isProcessing = false;
+      } catch (e) {
+        logger.error('重置 isProcessing 失败:', e);
+        this.isProcessing = false; // 强制重置
+      }
     }
   }
 
@@ -398,7 +519,7 @@ export class ClaudeNativeAgent {
         type: 'text',
       });
 
-      // 归档旧会话
+      // 归档工作目录中的会话文件
       await this.archiveSession();
 
       // 重置统计
@@ -432,6 +553,12 @@ export class ClaudeNativeAgent {
         lastError = error as Error;
         logger.warn(`调用失败 (尝试 ${attempt}/${this.maxRetries}):`, error);
 
+        // 检查是否为不可恢复错误
+        if (!this.isRecoverableError(lastError)) {
+          logger.error('不可恢复错误，放弃重试:', lastError.message);
+          throw lastError;
+        }
+
         // 如果是超时错误，检查是否有部分响应可以恢复
         if (lastError.message === 'Timeout' && attempt < this.maxRetries) {
           // 指数退避
@@ -453,7 +580,7 @@ export class ClaudeNativeAgent {
           }
         }
 
-        // 其他错误直接重试
+        // 其他可恢复错误直接重试
         if (attempt < this.maxRetries) {
           const delay = this.retryDelay * Math.pow(2, attempt - 1);
           await this.sleep(delay);
@@ -465,24 +592,51 @@ export class ClaudeNativeAgent {
   }
 
   /**
+   * 判断错误是否可恢复（可重试）
+   */
+  private isRecoverableError(error: Error): boolean {
+    const message = error.message.toLowerCase();
+
+    // 不可恢复错误关键词
+    const unrecoverablePatterns = [
+      'authentication', 'auth failed', 'credentials', 'invalid api key',
+      'permission denied', 'access denied', 'forbidden',
+      'invalid config', 'configuration error',
+      'not found', '404',
+      'rate limit', 'quota exceeded',  // 这些需要等待，暂时也算不可恢复
+      'billing', 'payment required', 'insufficient funds',
+    ];
+
+    for (const pattern of unrecoverablePatterns) {
+      if (message.includes(pattern)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * 调用 Claude CLI
-   * 使用 --session-id 实现会话持久化
+   * 使用独立工作目录 + --continue 实现会话持久化
+   * 使用 --dangerously-skip-permissions 获得完整系统权限
    */
   private async callClaude(userMessage: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const args = [
         '--print',
         '--verbose',
+        '--continue',  // 继续最近的会话
         '--output-format', 'stream-json',
         '--model', this.model,
-        '--session-id', this.sessionUuid,
+        '--dangerously-skip-permissions',  // 跳过权限检查，允许完整系统访问
       ];
 
-      logger.info(`调用 Claude，session: ${this.sessionUuid}`);
+      logger.info(`调用 Claude (--continue, 工作目录: ${XIAOZHI_WORKSPACE})`);
       logger.debug(`消息内容: ${userMessage.slice(0, 100)}...`);
 
       const proc = spawn('claude', args, {
-        cwd: os.homedir(),  // 在用户主目录执行，可访问整个系统
+        cwd: XIAOZHI_WORKSPACE,  // 使用独立工作目录
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -550,10 +704,14 @@ export class ClaudeNativeAgent {
 
       proc.on('error', reject);
 
-      // 超时
-      setTimeout(() => {
+      // 超时处理
+      setTimeout(async () => {
         if (!isComplete) {
-          proc.kill();
+          logger.warn(`Claude 调用超时 (${this.timeout}ms)，正在终止进程...`);
+
+          // 使用进程树杀死，确保所有子进程都被终止
+          await this.killProcessTree(proc);
+
           if (responseText) {
             logger.warn('超时但有部分响应，返回部分内容');
             resolve(responseText.trim());
@@ -566,106 +724,232 @@ export class ClaudeNativeAgent {
   }
 
   /**
+   * 安全终止进程及其子进程
+   * 使用 SIGTERM -> 等待 -> SIGKILL 的优雅关闭流程
+   */
+  private async killProcessTree(proc: ReturnType<typeof spawn>): Promise<void> {
+    const pid = proc.pid;
+    if (!pid) return;
+
+    try {
+      // 1. 尝试使用 pkill 杀死进程组（包括所有子进程）
+      // 使用 PGID 来杀死整个进程组
+      const { execSync } = await import('child_process');
+
+      try {
+        // 发送 SIGTERM 到整个进程组
+        process.kill(-pid, 'SIGTERM');
+        logger.debug(`发送 SIGTERM 到进程组 ${pid}`);
+      } catch {
+        // 如果进程组杀失败，尝试单独杀死进程
+        proc.kill('SIGTERM');
+        logger.debug(`发送 SIGTERM 到进程 ${pid}`);
+      }
+
+      // 2. 等待进程退出（最多 3 秒）
+      const startTime = Date.now();
+      while (Date.now() - startTime < 3000) {
+        try {
+          // 检查进程是否还存在
+          process.kill(pid, 0);
+          await this.sleep(100);
+        } catch {
+          // 进程已退出
+          logger.debug(`进程 ${pid} 已退出`);
+          return;
+        }
+      }
+
+      // 3. 进程未在 3 秒内退出，强制杀死
+      logger.warn(`进程 ${pid} 未响应 SIGTERM，使用 SIGKILL 强制终止`);
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        proc.kill('SIGKILL');
+      }
+
+      // 等待进程退出
+      await this.sleep(500);
+    } catch (error) {
+      logger.error('终止进程时出错:', error);
+      // 最后手段：直接杀死
+      try {
+        proc.kill('SIGKILL');
+      } catch {
+        // 忽略错误
+      }
+    }
+  }
+
+  /**
    * 执行会话压缩
    */
   async executeCompact(): Promise<string> {
-    const sessionFile = this.getSessionFilePath();
+    const projectDir = this.getProjectSessionDir();
 
-    // 检查文件是否存在
+    // 检查是否有会话文件
     try {
-      await fs.access(sessionFile);
+      const files = await fs.readdir(projectDir);
+      const sessionFiles = files.filter(f => f.endsWith('.jsonl'));
+
+      if (sessionFiles.length === 0) {
+        return '会话文件不存在，无需压缩。';
+      }
+
+      // 计算总大小
+      let totalSize = 0;
+      for (const f of sessionFiles) {
+        const stats = await fs.stat(path.join(projectDir, f));
+        totalSize += stats.size;
+      }
+
+      if (totalSize < 1024 * 100) { // 小于100KB不压缩
+        return `会话文件较小 (${this.formatBytes(totalSize)})，无需压缩。`;
+      }
+
+      // 归档所有会话
+      await this.archiveSession();
+      this.compactionCount++;
+      this.lastCompactTime = new Date();
+
+      return `✅ 会话已重置\n- 原大小: ${this.formatBytes(totalSize)}\n- 历史已归档到 backups/ 目录`;
     } catch {
       return '会话文件不存在，无需压缩。';
     }
-
-    // 获取压缩前大小
-    const beforeStats = await fs.stat(sessionFile);
-    const beforeSize = beforeStats.size;
-
-    if (beforeSize < 1024 * 100) { // 小于100KB不压缩
-      return `会话文件较小 (${this.formatBytes(beforeSize)})，无需压缩。`;
-    }
-
-    // 方案1: 创建归档并重置会话（最可靠）
-    await this.archiveSession();
-    this.compactionCount++;
-    this.lastCompactTime = new Date();
-
-    return `✅ 会话已重置\n- 原大小: ${this.formatBytes(beforeSize)}\n- 历史已归档到 backups/ 目录`;
   }
 
   /**
    * 归档会话文件
+   * 查找工作目录对应的所有会话文件并归档
+   * 使用文件锁防止并发冲突
    */
   private async archiveSession(): Promise<void> {
-    const sessionFile = this.getSessionFilePath();
-    const projectDir = path.dirname(sessionFile);
-    const backupsDir = path.join(projectDir, 'backups');
+    await this.withLock('session-archive', async () => {
+      const projectDir = this.getProjectSessionDir();
+      const backupsDir = path.join(projectDir, 'backups');
 
-    try {
-      // 确保备份目录存在
-      await fs.mkdir(backupsDir, { recursive: true });
+      try {
+        // 确保项目会话目录存在
+        await fs.mkdir(projectDir, { recursive: true });
 
-      // 生成备份文件名（带时间戳）
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupFile = path.join(backupsDir, `${this.sessionUuid}-${timestamp}.jsonl`);
+        // 获取所有会话文件
+        const files = await fs.readdir(projectDir);
+        const sessionFiles = files.filter(f => f.endsWith('.jsonl'));
 
-      // 复制到备份目录
-      await fs.copyFile(sessionFile, backupFile);
+        if (sessionFiles.length === 0) {
+          logger.info('没有会话文件需要归档');
+          return;
+        }
 
-      // 删除原文件（让 Claude 创建新会话）
-      await fs.unlink(sessionFile);
+        // 确保备份目录存在
+        await fs.mkdir(backupsDir, { recursive: true });
 
-      logger.info(`会话已归档: ${backupFile}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error;
+        // 生成备份时间戳
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+        // 归档所有会话文件
+        for (const sessionFile of sessionFiles) {
+          const sourcePath = path.join(projectDir, sessionFile);
+          const backupFile = path.join(backupsDir, `${sessionFile.replace('.jsonl', '')}-${timestamp}.jsonl`);
+
+          await fs.copyFile(sourcePath, backupFile);
+          await fs.unlink(sourcePath);
+
+          logger.info(`会话已归档: ${backupFile}`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+        // 目录不存在，无需处理
+        logger.info('会话目录不存在，无需归档');
       }
-      // 文件不存在，无需处理
-    }
+    });
   }
 
   /**
    * 恢复损坏的会话
+   * 从最近的备份恢复
+   * 使用文件锁防止并发冲突
    */
   private async recoverSession(): Promise<void> {
-    const sessionFile = this.getSessionFilePath();
-    const projectDir = path.dirname(sessionFile);
-    const backupsDir = path.join(projectDir, 'backups');
+    await this.withLock('session-archive', async () => {
+      const projectDir = this.getProjectSessionDir();
+      const backupsDir = path.join(projectDir, 'backups');
 
-    try {
-      // 尝试从最近的备份恢复
-      const files = await fs.readdir(backupsDir);
-      const sessionBackups = files
-        .filter(f => f.startsWith(this.sessionUuid))
-        .sort()
-        .reverse();
+      try {
+        // 获取所有会话文件
+        const files = await fs.readdir(projectDir);
+        const sessionFiles = files.filter(f => f.endsWith('.jsonl'));
 
-      if (sessionBackups.length > 0) {
-        const latestBackup = path.join(backupsDir, sessionBackups[0]);
-        await fs.copyFile(latestBackup, sessionFile);
-        logger.info(`从备份恢复会话: ${sessionBackups[0]}`);
-        return;
+        // 如果没有会话文件，尝试从备份恢复
+        if (sessionFiles.length === 0) {
+          const backupFiles = await fs.readdir(backupsDir);
+          const sortedBackups = backupFiles.filter(f => f.endsWith('.jsonl')).sort().reverse();
+
+          if (sortedBackups.length > 0) {
+            // 恢复最近的备份（去掉时间戳后缀）
+            const latestBackup = sortedBackups[0];
+            const originalName = latestBackup.replace(/-\d{4}-\d{2}-\d{2}T.*/, '.jsonl');
+            await fs.copyFile(
+              path.join(backupsDir, latestBackup),
+              path.join(projectDir, originalName)
+            );
+            logger.info(`从备份恢复会话: ${latestBackup}`);
+            return;
+          }
+        }
+
+        // 没有备份，删除损坏的文件
+        logger.warn('没有找到备份，删除损坏的会话文件');
+        for (const sessionFile of sessionFiles) {
+          await fs.unlink(path.join(projectDir, sessionFile)).catch(() => {});
+        }
+      } catch (error) {
+        logger.error('恢复会话失败:', error);
+        // 最后手段：删除所有损坏文件
+        try {
+          const files = await fs.readdir(projectDir);
+          for (const f of files.filter(f => f.endsWith('.jsonl'))) {
+            await fs.unlink(path.join(projectDir, f)).catch(() => {});
+          }
+        } catch {}
       }
-
-      // 没有备份，删除损坏的文件
-      logger.warn('没有找到备份，删除损坏的会话文件');
-      await fs.unlink(sessionFile).catch(() => {});
-    } catch (error) {
-      logger.error('恢复会话失败:', error);
-      // 最后手段：删除损坏文件
-      await fs.unlink(sessionFile).catch(() => {});
-    }
+    });
   }
 
   /**
    * 检查会话健康状态
    */
   async checkSessionHealth(): Promise<SessionHealth> {
-    const sessionFile = this.getSessionFilePath();
+    const projectDir = this.getProjectSessionDir();
 
     try {
-      const stats = await fs.stat(sessionFile);
+      const files = await fs.readdir(projectDir);
+      const sessionFiles = files.filter(f => f.endsWith('.jsonl'));
+
+      if (sessionFiles.length === 0) {
+        return 'not_found';
+      }
+
+      // 检查最新的会话文件（按修改时间排序）
+      let latestFile: string | null = null;
+      let latestTime = 0;
+
+      for (const f of sessionFiles) {
+        const filePath = path.join(projectDir, f);
+        const stats = await fs.stat(filePath);
+        if (stats.mtimeMs > latestTime) {
+          latestTime = stats.mtimeMs;
+          latestFile = filePath;
+        }
+      }
+
+      if (!latestFile) {
+        return 'not_found';
+      }
+
+      const stats = await fs.stat(latestFile);
 
       // 检查是否需要压缩
       if (stats.size > this.compactThreshold) {
@@ -673,7 +957,7 @@ export class ClaudeNativeAgent {
       }
 
       // 检查文件是否可读（简单验证）
-      const content = await fs.readFile(sessionFile, 'utf-8');
+      const content = await fs.readFile(latestFile, 'utf-8');
       if (content.length === 0) {
         return 'corrupted';
       }
@@ -701,15 +985,61 @@ export class ClaudeNativeAgent {
    * 获取会话统计信息
    */
   async getSessionStats(): Promise<SessionStats> {
-    const sessionFile = this.getSessionFilePath();
+    const projectDir = this.getProjectSessionDir();
 
     try {
-      const stats = await fs.stat(sessionFile);
-      const content = await fs.readFile(sessionFile, 'utf-8');
+      const files = await fs.readdir(projectDir);
+      const sessionFiles = files.filter(f => f.endsWith('.jsonl'));
+
+      if (sessionFiles.length === 0) {
+        return {
+          sessionFile: projectDir,
+          fileSize: 0,
+          messageCount: 0,
+          createdAt: null,
+          lastModified: null,
+          needsCompaction: false,
+          compactionCount: this.compactionCount,
+          totalTokensUsed: this.totalTokensUsed,
+          totalCost: this.totalCost,
+        };
+      }
+
+      // 获取最新的会话文件
+      let latestFile: string | null = null;
+      let latestTime = 0;
+      let totalSize = 0;
+
+      for (const f of sessionFiles) {
+        const filePath = path.join(projectDir, f);
+        const stats = await fs.stat(filePath);
+        totalSize += stats.size;
+        if (stats.mtimeMs > latestTime) {
+          latestTime = stats.mtimeMs;
+          latestFile = filePath;
+        }
+      }
+
+      if (!latestFile) {
+        return {
+          sessionFile: projectDir,
+          fileSize: 0,
+          messageCount: 0,
+          createdAt: null,
+          lastModified: null,
+          needsCompaction: false,
+          compactionCount: this.compactionCount,
+          totalTokensUsed: this.totalTokensUsed,
+          totalCost: this.totalCost,
+        };
+      }
+
+      const stats = await fs.stat(latestFile);
+      const content = await fs.readFile(latestFile, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
 
       return {
-        sessionFile,
+        sessionFile: latestFile,
         fileSize: stats.size,
         messageCount: lines.length,
         createdAt: stats.birthtime,
@@ -721,7 +1051,7 @@ export class ClaudeNativeAgent {
       };
     } catch {
       return {
-        sessionFile,
+        sessionFile: projectDir,
         fileSize: 0,
         messageCount: 0,
         createdAt: null,
@@ -735,27 +1065,61 @@ export class ClaudeNativeAgent {
   }
 
   /**
-   * 获取会话文件路径
+   * 获取项目会话目录路径
+   * Claude CLI 使用项目路径的哈希来组织会话
+   */
+  private getProjectSessionDir(): string {
+    // Claude CLI 生成项目哈希的方式：基于工作目录路径
+    // 格式: ~/.claude/projects/<project-hash>/
+    // 使用简单的方式生成项目哈希（与 Claude CLI 行为一致）
+    const projectHash = this.generateProjectHash(XIAOZHI_WORKSPACE);
+    return path.join(os.homedir(), '.claude', 'projects', projectHash);
+  }
+
+  /**
+   * 生成项目哈希
+   * Claude CLI 使用路径转换作为项目哈希（将 / 和 . 都替换为 -）
+   * 例如: /home/wxy/.xiaozhi/workspace -> -home-wxy--xiaozhi-workspace
+   */
+  private generateProjectHash(projectPath: string): string {
+    // Claude CLI 的项目哈希是将 / 和 . 都替换为 -
+    return projectPath.replace(/\//g, '-').replace(/\./g, '-');
+  }
+
+  /**
+   * 获取最新的会话文件路径
+   * 使用 --continue 时，Claude CLI 会选择最近的会话
    */
   private getSessionFilePath(): string {
-    // Claude 会话存储在 ~/.claude/projects/<project-hash>/<session-id>.jsonl
-    // 使用用户主目录作为项目路径
-    const projectHash = os.homedir().replace(/\//g, '-').replace(/^-/, '');
-    return path.join(
-      os.homedir(),
-      '.claude',
-      'projects',
-      projectHash,
-      `${this.sessionUuid}.jsonl`
-    );
+    // 返回项目会话目录（用于检查和归档）
+    // 实际会话文件由 Claude CLI 自动管理
+    const projectDir = this.getProjectSessionDir();
+    return path.join(projectDir, 'latest.jsonl');
+  }
+
+  /**
+   * 获取项目会话目录中的所有会话文件
+   */
+  private async getSessionFiles(): Promise<string[]> {
+    const projectDir = this.getProjectSessionDir();
+    try {
+      const files = await fs.readdir(projectDir);
+      return files.filter(f => f.endsWith('.jsonl'));
+    } catch {
+      return [];
+    }
   }
 
   /**
    * 写入系统提示词到用户主目录
    * Claude CLI 会读取 CLAUDE.md 作为项目说明
    */
+  /**
+   * 写入系统提示词到工作目录
+   * Claude CLI 会读取当前目录的 CLAUDE.md 作为项目说明
+   */
   private async writeSystemPrompt(): Promise<void> {
-    const claudeMdPath = path.join(os.homedir(), 'CLAUDE.md');
+    const claudeMdPath = path.join(XIAOZHI_WORKSPACE, 'CLAUDE.md');
 
     // 检查是否有自定义系统提示词文件
     let systemPrompt = DEFAULT_SYSTEM_PROMPT;
@@ -768,31 +1132,49 @@ export class ClaudeNativeAgent {
     }
 
     await fs.writeFile(claudeMdPath, systemPrompt);
-    logger.info('系统提示词已写入 CLAUDE.md');
+    logger.info(`系统提示词已写入 ${claudeMdPath}`);
   }
 
   /**
    * 检查会话是否已存在
    */
   private async checkSessionExists(): Promise<boolean> {
-    const sessionFile = this.getSessionFilePath();
-
-    try {
-      await fs.access(sessionFile);
-      return true;
-    } catch {
-      return false;
-    }
+    const sessionFiles = await this.getSessionFiles();
+    return sessionFiles.length > 0;
   }
 
   /**
    * 获取会话历史（调试用）
    */
   async getSessionHistory(): Promise<string[]> {
-    const sessionFile = this.getSessionFilePath();
+    const projectDir = this.getProjectSessionDir();
 
     try {
-      const content = await fs.readFile(sessionFile, 'utf-8');
+      const files = await fs.readdir(projectDir);
+      const sessionFiles = files.filter(f => f.endsWith('.jsonl'));
+
+      if (sessionFiles.length === 0) {
+        return [];
+      }
+
+      // 获取最新的会话文件
+      let latestFile: string | null = null;
+      let latestTime = 0;
+
+      for (const f of sessionFiles) {
+        const filePath = path.join(projectDir, f);
+        const stats = await fs.stat(filePath);
+        if (stats.mtimeMs > latestTime) {
+          latestTime = stats.mtimeMs;
+          latestFile = filePath;
+        }
+      }
+
+      if (!latestFile) {
+        return [];
+      }
+
+      const content = await fs.readFile(latestFile, 'utf-8');
       return content.split('\n').filter(Boolean);
     } catch {
       return [];
@@ -815,5 +1197,99 @@ export class ClaudeNativeAgent {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ==================== 文件锁机制 ====================
+
+  /**
+   * 获取锁文件路径
+   */
+  private getLockFilePath(lockName: string): string {
+    return path.join(LOCKS_DIR, `${lockName}.lock`);
+  }
+
+  /**
+   * 获取文件锁
+   * @param lockName 锁名称
+   * @param timeout 超时时间（毫秒）
+   * @returns 锁释放函数
+   */
+  private async acquireLock(lockName: string, timeout: number = DEFAULT_LOCK_TIMEOUT): Promise<() => Promise<void>> {
+    const lockFile = this.getLockFilePath(lockName);
+    await fs.mkdir(LOCKS_DIR, { recursive: true });
+
+    const startTime = Date.now();
+    const lockId = `${process.pid}-${Date.now()}`;
+
+    while (true) {
+      try {
+        // 尝试创建锁文件（独占模式）
+        const existingLock = await fs.readFile(lockFile, 'utf-8').catch(() => null);
+
+        if (existingLock) {
+          // 检查锁是否过期
+          const lockData = JSON.parse(existingLock);
+          if (Date.now() - lockData.timestamp > timeout) {
+            // 锁已过期，删除旧锁
+            logger.warn(`锁已过期，删除旧锁: ${lockName}`);
+            await fs.unlink(lockFile).catch(() => {});
+          } else {
+            // 锁仍有效，等待
+            if (Date.now() - startTime > timeout) {
+              throw new Error(`获取锁超时: ${lockName}`);
+            }
+            await this.sleep(100);
+            continue;
+          }
+        }
+
+        // 创建新锁
+        await fs.writeFile(lockFile, JSON.stringify({
+          lockId,
+          pid: process.pid,
+          timestamp: Date.now(),
+        }), { flag: 'wx' }); // wx = 独占创建
+
+        logger.debug(`获取锁成功: ${lockName} (${lockId})`);
+
+        // 返回释放函数
+        return async () => {
+          try {
+            const currentLock = await fs.readFile(lockFile, 'utf-8');
+            const data = JSON.parse(currentLock);
+            if (data.lockId === lockId) {
+              await fs.unlink(lockFile);
+              logger.debug(`释放锁成功: ${lockName}`);
+            }
+          } catch {
+            // 锁文件可能已被删除
+          }
+        };
+      } catch (error: any) {
+        if (error.code === 'EEXIST') {
+          // 文件已存在，继续等待
+          if (Date.now() - startTime > timeout) {
+            throw new Error(`获取锁超时: ${lockName}`);
+          }
+          await this.sleep(100);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * 使用锁执行操作
+   * @param lockName 锁名称
+   * @param operation 要执行的操作
+   */
+  private async withLock<T>(lockName: string, operation: () => Promise<T>): Promise<T> {
+    const releaseLock = await this.acquireLock(lockName);
+    try {
+      return await operation();
+    } finally {
+      await releaseLock();
+    }
   }
 }

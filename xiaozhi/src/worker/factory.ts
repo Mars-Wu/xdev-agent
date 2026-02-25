@@ -250,6 +250,11 @@ ${task}
   /**
    * 生成Claude CLI启动命令
    *
+   * 使用交互模式而非 --print 模式，以支持完整的 hooks 功能：
+   * - Stop hooks: 任务完成时触发通知
+   * - Notification hooks: AI 请求用户输入时通知
+   * - SubagentStop hooks: 子代理完成时通知
+   *
    * 如果指定了 workDir：
    *   - tmux 在 workDir 中运行
    *   - CLAUDE.md 通过符号链接指向 Worker 配置
@@ -263,9 +268,10 @@ ${task}
     const workerDir = this.getWorkerDir(workerName);
     const logFile = path.join(workerDir, 'output.log');
 
+    // 使用交互模式以支持完整 hooks 功能
+    // 注意：不使用 --print，因为 --print 模式不支持 Stop hooks
     const parts = [
       'claude',
-      '--print',
       '--dangerously-skip-permissions',
     ];
 
@@ -282,6 +288,7 @@ ${task}
 
     // 任务描述和日志输出
     // Worker 会读取当前目录的 CLAUDE.md（可能是符号链接）
+    // 使用 tee 同时输出到终端和日志文件
     parts.push(`"${config.task.replace(/"/g, '\\"')}" 2>&1 | tee "${logFile}"`);
 
     return parts.join(' ');

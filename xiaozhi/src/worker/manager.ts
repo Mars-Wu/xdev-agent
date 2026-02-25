@@ -169,6 +169,40 @@ export class WorkerManager {
   }
 
   /**
+   * 获取所有运行中的 Worker
+   */
+  async getRunningWorkers(): Promise<ClaudeWorker[]> {
+    const records = this.storage.getRunningWorkers();
+    const workers: ClaudeWorker[] = [];
+
+    for (const record of records) {
+      const worker = await this.getStatus(record.id);
+      if (worker && worker.status === 'running') {
+        workers.push(worker);
+      }
+    }
+
+    return workers;
+  }
+
+  /**
+   * 获取所有活跃的 Worker（运行中或暂停）
+   */
+  async getActiveWorkers(): Promise<ClaudeWorker[]> {
+    const records = this.storage.getActiveWorkers();
+    const workers: ClaudeWorker[] = [];
+
+    for (const record of records) {
+      const worker = await this.getStatus(record.id);
+      if (worker && ['running', 'pending', 'paused'].includes(worker.status)) {
+        workers.push(worker);
+      }
+    }
+
+    return workers;
+  }
+
+  /**
    * 终止Worker
    */
   async terminate(workerId: string, force: boolean = false): Promise<void> {
@@ -250,8 +284,25 @@ export class WorkerManager {
 
   /**
    * 保存Worker到存储
+   * 注意：需要先确保 session 存在，否则会触发外键约束错误
    */
   private saveWorkerToStorage(worker: ClaudeWorker): void {
+    // 确保 session 存在（如果不存在则创建）
+    const existingSession = this.storage.getSession(worker.sessionId);
+    if (!existingSession) {
+      // 自动创建 session 记录以满足外键约束
+      this.storage.saveSession({
+        id: worker.sessionId,
+        name: `Session ${worker.sessionId}`,
+        userId: 'system',
+        feishuChatId: 'system',
+        status: 'active',
+        context: '{}',
+        settings: '{}',
+      });
+      logger.info(`Auto-created session ${worker.sessionId} for worker ${worker.id}`);
+    }
+
     this.storage.saveWorker({
       id: worker.id,
       name: worker.name,

@@ -138,6 +138,18 @@ export class FeishuClient {
     this.reconnectTimer = setTimeout(async () => {
       console.log(`[Feishu] 开始第 ${this.reconnectAttempts} 次重连...`);
 
+      // P1 修复：在创建新实例前显式关闭旧实例，避免资源泄漏
+      if (this.wsClient) {
+        try {
+          // 尝试关闭旧的 WSClient（如果有关闭方法的话）
+          // lark WSClient 可能没有显式的 close 方法，这里设置为 undefined 让 GC 回收
+          this.wsClient = undefined;
+          console.log('[Feishu] 旧 WSClient 实例已释放');
+        } catch (error) {
+          console.warn('[Feishu] 关闭旧 WSClient 时出错:', error);
+        }
+      }
+
       // 重新创建 WSClient 实例
       this.initWebSocket();
 

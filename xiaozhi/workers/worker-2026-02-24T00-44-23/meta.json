@@ -1,0 +1,29 @@
+{
+  "id": "w_mlzvuv4s_7zpmi9",
+  "name": "worker-2026-02-24T00-44-23",
+  "sessionId": "default",
+  "status": "completed",
+  "tmuxSession": "worker_mlzvuv4s",
+  "claudeSessionId": "w_mlzvuv4s_7zpmi9",
+  "task": {
+    "description": "小智记忆管理系统",
+    "workDir": "/home/wxy/data/claudeClaw",
+    "model": "glm-5",
+    "timeout": 1800000
+  },
+  "progress": {
+    "percentage": 0,
+    "currentStep": "初始化",
+    "toolCalls": 0,
+    "filesModified": 0,
+    "lastUpdate": "2026-02-24T00:44:23.546Z"
+  },
+  "hooks": {
+    "progressFile": "/home/wxy/data/claudeClaw/xiaozhi/workers/worker-2026-02-24T00-44-23/progress.json",
+    "notifyScript": "/home/wxy/data/claudeClaw/xiaozhi/scripts/notify_xiaozhi.sh",
+    "completedScript": "/home/wxy/data/claudeClaw/xiaozhi/scripts/worker_completed.sh"
+  },
+  "createdAt": "2026-02-24T00:44:23.546Z",
+  "startedAt": "2026-02-24T00:44:23.546Z",
+  "completedAt": "2026-02-24T01:17:31.442Z"
+}

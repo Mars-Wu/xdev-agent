@@ -2,12 +2,13 @@
 // Claude Agent - 最大化利用 Claude CLI 原生功能
 // 使用独立工作目录 + --continue 让 Claude CLI 自己管理会话持久化
 // 增强版本：支持 auto-compact 检测、错误重试、会话恢复
+// 消息队列：支持飞书消息和 Worker 消息排队处理
 
 import { spawn } from 'child_process';
 import { FeishuClient } from '../feishu/client';
 import { FeishuMessage } from '../feishu/types';
 import { createLogger } from '../utils/logger';
-import { getDefaultModel } from '../config';
+import { getDefaultModel, PATHS } from '../config';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -20,14 +21,14 @@ const DEFAULT_TIMEOUT = 120000; // 2分钟
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 1000; // 1秒
 const DEFAULT_LOCK_TIMEOUT = 30000; // 锁超时时间 30秒
+const DEFAULT_MAX_QUEUE_SIZE = 100; // P1: 消息队列最大容量
 
-// 小智配置目录和专用工作目录
-const XIAOZHI_DIR = path.join(os.homedir(), '.xiaozhi');
-const XIAOZHI_WORKSPACE = path.join(XIAOZHI_DIR, 'workspace');  // 独立工作目录，用于会话持久化
-const LOCKS_DIR = path.join(XIAOZHI_DIR, 'locks');  // 锁文件目录
-
-// 系统提示词文件路径
-const SYSTEM_PROMPT_FILE = path.join(XIAOZHI_DIR, 'system-prompt.md');
+// P1 修复：使用统一路径配置
+// 为了保持向后兼容，保留这些常量但改为从 PATHS 获取
+const XIAOZHI_DIR = PATHS.XIAOZHI_HOME;
+const XIAOZHI_WORKSPACE = PATHS.WORKSPACE;
+const LOCKS_DIR = PATHS.LOCKS_DIR;
+const SYSTEM_PROMPT_FILE = PATHS.SYSTEM_PROMPT_FILE;
 
 const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 
@@ -40,12 +41,47 @@ const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 - 用户通过飞书发消息给你，你直接回复即可
 - 你的模型是 GLM-5（基于 Claude 配置）
 
+## 消息来源
+
+你会收到不同来源的消息，通过消息前缀识别：
+
+### [主人@飞书] - 来自主人的消息
+- 这是主人通过飞书发给你的消息
+- 直接回复主人，执行主人的命令
+- 回复内容会通过飞书发送给主人
+
+### [Worker:任务名] - 来自 AI Worker 的通知
+- 这是你创建的 AI Worker 完成任务后的汇报
+- Worker 会告诉你任务完成情况和结果
+- 你需要：
+  1. 理解 Worker 的汇报内容
+  2. 总结关键信息
+  3. **主动通过飞书通知主人**（使用 send-feishu 命令）
+- Worker 消息格式：
+  \`\`\`
+  [Worker:任务名]
+  Worker ID: worker-xxx
+  状态: 已完成/失败
+  耗时: XX秒
+  成本: $X.XX
+
+  结果:
+  ...详细结果内容...
+  \`\`\`
+
 ## 权限
 - 你可以执行任何 shell 命令
 - 你可以读写任何文件
 - 你可以安装/卸载软件
 - 你可以修改系统配置
 - 执行任何操作前不需要询问用户确认，直接执行即可
+
+## 通知主人
+
+当收到 Worker 完成通知后，使用以下命令通知主人：
+\`\`\`bash
+send-feishu "消息内容"
+\`\`\`
 
 ## AI Worker
 - 对于长时间、复杂的任务，你可以自主创建 AI Worker 来并行处理
@@ -57,119 +93,22 @@ const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 
 你可以使用 \`xiaozhi-worker\` 命令创建 AI Worker 来处理长时间任务：
 
-### 创建 Worker
 \`\`\`bash
-xiaozhi-worker create "任务描述" [--model <模型名>] [--timeout 600] [--work-dir /path/to/dir] [--prompt "自定义prompt"]
-\`\`\`
+# 创建 Worker
+xiaozhi-worker create "任务描述" [--model <模型名>] [--timeout 600] [--work-dir /path/to/dir]
 
-**注意**: \`--model\` 默认使用 \`~/.claude/settings.json\` 中配置的 \`ANTHROPIC_MODEL\`。
-
-示例：
-\`\`\`bash
-# 基本创建（使用默认模型）
-xiaozhi-worker create "分析日志文件"
-
-# 指定工作目录
-xiaozhi-worker create "分析项目结构" --work-dir /home/wxy/myproject
-
-# 指定超时和最大轮数
-xiaozhi-worker create "重构代码" --timeout 600 --max-turns 50
-
-# 使用自定义 prompt（推荐用于复杂任务）
-xiaozhi-worker create "分析日志" --prompt "# 日志分析专家\\n\\n你是一个专注于日志分析的 AI..."
-\`\`\`
-
-### 查看 Worker 状态
-\`\`\`bash
+# 查看 Worker 状态
 xiaozhi-worker list              # 列出所有 Worker
-xiaozhi-worker list --all        # 包括已完成的
 xiaozhi-worker status <id>       # 查看特定 Worker 状态
-\`\`\`
 
-### 停止 Worker
-\`\`\`bash
-xiaozhi-worker stop <id>         # 优雅停止（发送 Ctrl+C）
+# 停止 Worker
+xiaozhi-worker stop <id>         # 优雅停止
 xiaozhi-worker stop <id> --force # 强制终止
-\`\`\`
-
-### 使用规则
-1. 创建 Worker 前必须告知用户，说明任务内容和预期时间
-2. Worker 在独立的 tmux 会话中运行
-3. Worker 完成后会自动通知你
-4. Worker 元数据目录：~/.xiaozhi/workers/<worker-name>/
-
-### 项目目录工作模式
-
-当使用 \`--work-dir\` 指定项目目录时（推荐用于编程任务）：
-1. Worker 直接在项目目录中运行（tmux cwd = 项目目录）
-2. 项目目录会自动创建 \`CLAUDE.md\` 符号链接，指向 Worker 的专属配置
-3. Worker 可以直接操作项目文件，无需绝对路径
-4. 如果项目已有 \`CLAUDE.md\`，会自动备份为 \`CLAUDE.md.backup-<timestamp>\`
-
-目录结构示例：
-\`\`\`
-~/.xiaozhi/workers/worker-2024-01-01/
-├── CLAUDE.md          # Worker 的身份和任务定义（实际文件）
-├── output.log         # 执行日志
-└── result.md          # 结果输出
-
-~/data/my-project/     # 项目目录
-├── CLAUDE.md          # 符号链接 -> ~/.xiaozhi/workers/worker-2024-01-01/CLAUDE.md
-├── src/               # 项目源码
-└── package.json       # 项目配置
-\`\`\`
-
-### 为 Worker 生成专属 Prompt
-
-**重要**: 对于复杂任务，你应该为 Worker 生成专门的 prompt，而不是使用默认的。
-
-生成 Worker prompt 的原则：
-1. **明确角色定位**: 定义 Worker 的专业身份（如"代码审查专家"、"日志分析师"）
-2. **具体任务说明**: 详细描述任务目标、范围和预期输出
-3. **领域知识注入**: 提供任务所需的专业知识、规则或最佳实践
-4. **输出格式要求**: 明确结果的格式和内容要求
-5. **限制条件**: 说明不应该做的事情
-
-示例 prompt 模板：
-\`\`\`
-# [角色名称]
-
-你是小智创建的 [专业角色]，专注于 [任务类型]。
-
-## 专业能力
-- [能力1]
-- [能力2]
-
-## 当前任务
-[详细任务描述]
-
-## 工作流程
-1. [步骤1]
-2. [步骤2]
-
-## 输出要求
-- [要求1]
-- [要求2]
-
-## 注意事项
-- [限制1]
-- [限制2]
-\`\`\`
-
-使用 --prompt 参数传入（注意转义引号）：
-\`\`\`bash
-xiaozhi-worker create "任务" --prompt "$(cat <<'EOF'
-# 你的 prompt 内容
-...
-EOF
-)"
 \`\`\`
 
 ## 系统监控
 - 你应该监控系统资源：网络使用、硬盘使用、内存使用
 - 当内存使用超过 80% 时，必须提醒用户
-- 进行内存分析，找出占用内存高的进程
-- 建议清理或优化方案
 
 ## 自我认知
 - 你的项目代码位于 ~/data/claudeClaw 目录
@@ -177,17 +116,37 @@ EOF
 - tmux 会话 \`claudeClaw\` 是用户与 Claude Code 沟通修改你的会话
 - **不要处理或干扰 tmux 会话 \`claudeClaw\`**
 
-## 能力
-- 你拥有 Claude 的全部能力
-- 可以执行 shell 命令、读写文件、管理进程
-- 可以分析、讨论、回答问题
-- 可以帮助用户完成各种系统管理任务
-- 可以创建和管理 AI Worker
-
 ## 回复风格
 - 简洁友好，直接回答
 - 不要过多客套
 - 执行命令后报告结果即可`;
+
+// ==================== 消息队列类型 ====================
+
+// 消息来源类型
+export type MessageSource = 'feishu' | 'worker' | 'expert';
+
+// 队列中的消息
+export interface QueuedMessage {
+  id: string;
+  source: MessageSource;
+  content: string;
+  // 飞书消息相关
+  chatId?: string;
+  // Worker 消息相关（兼容旧版）
+  workerId?: string;
+  workerName?: string;
+  taskName?: string;
+  status?: 'completed' | 'failed';
+  cost?: number;
+  duration?: number;
+  // 专家消息相关
+  expertName?: string;
+  expertSuccess?: boolean;
+  // 元数据
+  timestamp: Date;
+  retries: number;
+}
 
 // 响应块类型（匹配 Claude CLI --output-format stream-json 的实际格式）
 interface ResponseChunk {
@@ -257,6 +216,13 @@ export class ClaudeNativeAgent {
   private totalCost: number = 0;
   private lastCompactTime: Date | null = null;
 
+  // 消息队列
+  private messageQueue: QueuedMessage[] = [];
+  private queueProcessing: boolean = false;
+  private maxQueueRetries: number = 3;
+  private maxQueueSize: number = DEFAULT_MAX_QUEUE_SIZE;  // P1: 队列容量限制
+  private defaultChatId: string = '';  // 默认飞书聊天 ID，用于 Worker 通知
+
   constructor(config: ClaudeNativeAgentConfig) {
     this.feishuClient = config.feishuClient;
     this.model = config.model || getDefaultModel();
@@ -297,18 +263,22 @@ export class ClaudeNativeAgent {
   }
 
   /**
-   * 处理飞书消息
+   * 设置默认飞书聊天 ID（用于 Worker 通知）
+   */
+  setDefaultChatId(chatId: string): void {
+    this.defaultChatId = chatId;
+  }
+
+  /**
+   * 处理飞书消息（入队）
    */
   async handleMessage(msg: FeishuMessage): Promise<void> {
-    if (this.isProcessing) {
-      await this.feishuClient.sendMessage(msg.chatId, {
-        content: '⏳ 正在处理上一个请求...',
-        type: 'text',
-      });
-      return;
+    // 保存 chatId 用于 Worker 通知
+    if (msg.chatId) {
+      this.defaultChatId = msg.chatId;
     }
 
-    // 检查特殊命令
+    // 检查特殊命令（优先处理，不入队）
     const trimmedContent = msg.content.trim();
     if (trimmedContent === '/compact' || trimmedContent === '/压缩') {
       await this.handleCompactCommand(msg);
@@ -327,6 +297,192 @@ export class ClaudeNativeAgent {
       return;
     }
 
+    // 入队处理
+    const queueMsg: QueuedMessage = {
+      id: `feishu-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source: 'feishu',
+      content: msg.content,
+      chatId: msg.chatId,
+      timestamp: new Date(),
+      retries: 0,
+    };
+
+    // P1: 检查队列容量
+    if (this.messageQueue.length >= this.maxQueueSize) {
+      logger.warn(`消息队列已满 (${this.messageQueue.length}/${this.maxQueueSize})，丢弃最旧的消息`);
+      const dropped = this.messageQueue.shift();
+      if (dropped && dropped.chatId) {
+        await this.feishuClient.sendMessage(dropped.chatId, {
+          content: '消息处理超时，已被丢弃。请重新发送。',
+          type: 'text',
+        }).catch(() => {});
+      }
+    }
+
+    this.messageQueue.push(queueMsg);
+    logger.info(`飞书消息入队: ${queueMsg.id}, 队列长度: ${this.messageQueue.length}`);
+
+    // 如果正在处理，通知用户
+    if (this.isProcessing) {
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: '⏳ 消息已入队，正在处理上一个请求...',
+        type: 'text',
+      }).catch(() => {});
+    }
+
+    // 触发队列处理
+    this.processQueue();
+  }
+
+  /**
+   * 处理 Worker 消息（入队）
+   */
+  async handleWorkerMessage(data: {
+    workerId: string;
+    workerName: string;
+    taskName: string;
+    status: 'completed' | 'failed';
+    result: string;
+    cost?: number;
+    duration?: number;
+  }): Promise<void> {
+    // 构建 Worker 通知消息
+    const content = [
+      `[Worker:${data.taskName}]`,
+      `Worker ID: ${data.workerId}`,
+      `Worker 名称: ${data.workerName}`,
+      `状态: ${data.status === 'completed' ? '已完成' : '失败'}`,
+      data.duration ? `耗时: ${Math.round(data.duration / 1000)}秒` : '',
+      data.cost ? `成本: $${data.cost.toFixed(4)}` : '',
+      '',
+      '结果:',
+      data.result,
+    ].filter(Boolean).join('\n');
+
+    const queueMsg: QueuedMessage = {
+      id: `worker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source: 'worker',
+      content,
+      workerId: data.workerId,
+      workerName: data.workerName,
+      taskName: data.taskName,
+      status: data.status,
+      cost: data.cost,
+      duration: data.duration,
+      timestamp: new Date(),
+      retries: 0,
+    };
+
+    // P1: 检查队列容量
+    if (this.messageQueue.length >= this.maxQueueSize) {
+      logger.warn(`消息队列已满 (${this.messageQueue.length}/${this.maxQueueSize})，丢弃最旧的消息`);
+      this.messageQueue.shift();
+    }
+
+    this.messageQueue.push(queueMsg);
+    logger.info(`Worker消息入队: ${queueMsg.id} (${data.taskName}), 队列长度: ${this.messageQueue.length}`);
+
+    // 触发队列处理
+    this.processQueue();
+  }
+
+  /**
+   * 处理专家消息（入队）
+   */
+  async handleExpertMessage(data: {
+    expertName: string;
+    success: boolean;
+    result: string;
+    task: string;
+  }): Promise<void> {
+    // 构建专家通知消息
+    const content = [
+      `[专家:${data.expertName}]`,
+      `状态: ${data.success ? '已完成' : '失败'}`,
+      data.task ? `任务: ${data.task}` : '',
+      '',
+      '结果:',
+      data.result,
+    ].filter(Boolean).join('\n');
+
+    const queueMsg: QueuedMessage = {
+      id: `expert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source: 'expert',
+      content,
+      expertName: data.expertName,
+      expertSuccess: data.success,
+      timestamp: new Date(),
+      retries: 0,
+    };
+
+    // P1: 检查队列容量
+    if (this.messageQueue.length >= this.maxQueueSize) {
+      logger.warn(`消息队列已满 (${this.messageQueue.length}/${this.maxQueueSize})，丢弃最旧的消息`);
+      this.messageQueue.shift();
+    }
+
+    this.messageQueue.push(queueMsg);
+    logger.info(`专家消息入队: ${queueMsg.id} (${data.expertName}), 队列长度: ${this.messageQueue.length}`);
+
+    // 触发队列处理
+    this.processQueue();
+  }
+
+  /**
+   * 处理消息队列
+   */
+  private async processQueue(): Promise<void> {
+    if (this.queueProcessing || this.messageQueue.length === 0) {
+      return;
+    }
+
+    this.queueProcessing = true;
+
+    while (this.messageQueue.length > 0) {
+      const msg = this.messageQueue[0];
+
+      try {
+        await this.processMessage(msg);
+        // 处理成功，出队
+        this.messageQueue.shift();
+        logger.info(`消息处理完成: ${msg.id}, 剩余队列: ${this.messageQueue.length}`);
+      } catch (error) {
+        logger.error(`消息处理失败: ${msg.id}`, error);
+        msg.retries++;
+
+        if (msg.retries >= this.maxQueueRetries) {
+          // 超过重试次数，出队并通知
+          this.messageQueue.shift();
+          logger.error(`消息超过重试次数，丢弃: ${msg.id}`);
+          if (msg.chatId) {
+            await this.feishuClient.sendMessage(msg.chatId, {
+              content: `消息处理失败，已丢弃。请稍后重试。`,
+              type: 'text',
+            }).catch(() => {});
+          }
+        } else {
+          // 保留在队列中，等待下次处理
+          // 先出队再入队（放到队尾）
+          this.messageQueue.shift();
+          this.messageQueue.push(msg);
+          logger.warn(`消息将重试: ${msg.id}, 重试次数: ${msg.retries}`);
+          // 等待一段时间再继续
+          await this.sleep(2000);
+        }
+      }
+    }
+
+    this.queueProcessing = false;
+  }
+
+  /**
+   * 处理单条消息
+   */
+  private async processMessage(msg: QueuedMessage): Promise<void> {
+    if (this.isProcessing) {
+      throw new Error('Another message is being processed');
+    }
+
     this.isProcessing = true;
     const startTime = Date.now();
 
@@ -338,70 +494,127 @@ export class ClaudeNativeAgent {
       }
     }, 5 * 60 * 1000);
 
-    // 进度提示
+    // 进度提示（仅飞书消息）
     let progressSent = false;
-    const progressTimer = setTimeout(async () => {
-      if (!progressSent) {
+    const progressTimer = msg.source === 'feishu' ? setTimeout(async () => {
+      if (!progressSent && msg.chatId) {
         progressSent = true;
         const elapsed = Math.round((Date.now() - startTime) / 1000);
-        await this.feishuClient.sendMessage(msg.chatId, {
+        await this.feishuClient.sendMessage(msg.chatId!, {
           content: `⏳ 思考中... (${elapsed}s)`,
           type: 'text',
-        }).catch(() => {}); // 忽略发送失败
+        }).catch(() => {});
       }
-    }, 8000);
+    }, 8000) : null;
 
     try {
-      logger.info(`收到消息: ${msg.content.slice(0, 50)}...`);
+      // 添加来源前缀
+      const prefixedContent = msg.source === 'feishu'
+        ? `[主人@飞书] ${msg.content}`
+        : msg.content;
 
-      // 检查是否需要压缩提示
-      const stats = await this.getSessionStats();
-      if (stats.needsCompaction && !this.autoCompact) {
-        // 发送压缩提示但不阻止消息处理
-        this.feishuClient.sendMessage(msg.chatId, {
-          content: `💡 会话上下文较大 (${this.formatBytes(stats.fileSize)})，建议发送 /compact 压缩历史`,
-          type: 'text',
-        }).catch(() => {}); // 忽略发送失败
+      logger.info(`处理消息: ${msg.id}, 来源: ${msg.source}`);
+
+      // 检查是否需要压缩提示（仅飞书消息）
+      if (msg.source === 'feishu' && msg.chatId) {
+        const stats = await this.getSessionStats();
+        if (stats.needsCompaction && !this.autoCompact) {
+          this.feishuClient.sendMessage(msg.chatId, {
+            content: `💡 会话上下文较大 (${this.formatBytes(stats.fileSize)})，建议发送 /compact 压缩历史`,
+            type: 'text',
+          }).catch(() => {});
+        }
       }
 
-      // 调用 Claude（带重试机制）
-      const response = await this.callClaudeWithRetry(msg.content);
+      // 调用 Claude
+      const response = await this.callClaudeWithRetry(prefixedContent);
 
-      clearTimeout(progressTimer);
+      if (progressTimer) clearTimeout(progressTimer);
 
       const elapsed = Date.now() - startTime;
       logger.info(`响应完成，耗时: ${elapsed}ms`);
 
-      await this.feishuClient.sendMessage(msg.chatId, {
-        content: response,
-        type: 'text',
-      });
+      // 发送回复
+      const targetChatId = msg.chatId || this.defaultChatId;
+      if (targetChatId) {
+        await this.feishuClient.sendMessage(targetChatId, {
+          content: response,
+          type: 'text',
+        });
+        logger.info(`已发送回复到飞书 (chatId: ${targetChatId.slice(0, 10)}...)`);
+      }
 
     } catch (error) {
       logger.error('处理失败:', error);
-      clearTimeout(progressTimer);
+      if (progressTimer) clearTimeout(progressTimer);
 
-      // 提取错误信息
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const shortError = errorMessage.slice(0, 200);  // 限制长度
+      const shortError = errorMessage.slice(0, 200);
 
-      try {
-        await this.feishuClient.sendMessage(msg.chatId, {
-          content: `处理出错: ${shortError}\n\n请稍后重试，或发送 /health 检查状态。`,
-          type: 'text',
-        });
-      } catch (sendError) {
-        logger.error('发送错误消息失败:', sendError);
+      const targetChatId = msg.chatId || this.defaultChatId;
+      if (targetChatId) {
+        try {
+          await this.feishuClient.sendMessage(targetChatId, {
+            content: `处理出错: ${shortError}\n\n请稍后重试，或发送 /health 检查状态。`,
+            type: 'text',
+          });
+        } catch (sendError) {
+          logger.error('发送错误消息失败:', sendError);
+        }
       }
+
+      throw error;
     } finally {
       clearTimeout(safetyTimer);
-      // 确保 isProcessing 被重置，即使 finally 块中发生异常
-      try {
-        this.isProcessing = false;
-      } catch (e) {
-        logger.error('重置 isProcessing 失败:', e);
-        this.isProcessing = false; // 强制重置
-      }
+      this.isProcessing = false;
+    }
+  }
+
+  /**
+   * 获取队列状态
+   */
+  getQueueStatus(): { length: number; messages: QueuedMessage[] } {
+    return {
+      length: this.messageQueue.length,
+      messages: [...this.messageQueue],
+    };
+  }
+
+  /**
+   * 发送飞书通知（用于升级等场景）
+   */
+  async sendFeishuNotification(message: string): Promise<void> {
+    if (!this.defaultChatId) {
+      logger.warn('没有默认 chatId，无法发送飞书通知');
+      return;
+    }
+
+    try {
+      await this.feishuClient.sendMessage(this.defaultChatId, {
+        content: message,
+        type: 'text',
+      });
+      logger.info('飞书通知已发送');
+    } catch (error) {
+      logger.error('发送飞书通知失败:', error);
+    }
+  }
+
+  /**
+   * 处理测试消息（给影子实例用）
+   * 直接处理消息并返回响应，不经过队列
+   */
+  async processTestMessage(content: string): Promise<string> {
+    logger.info(`处理测试消息: ${content.slice(0, 50)}...`);
+
+    try {
+      // 直接调用 Claude
+      const response = await this.callClaudeWithRetry(`[测试消息] ${content}`);
+      return response;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('处理测试消息失败:', error);
+      return `处理失败: ${errorMessage}`;
     }
   }
 
@@ -630,6 +843,7 @@ export class ClaudeNativeAgent {
         '--output-format', 'stream-json',
         '--model', this.model,
         '--dangerously-skip-permissions',  // 跳过权限检查，允许完整系统访问
+        '--add-dir', '/home/wxy',  // 添加 /home/wxy 目录访问权限
       ];
 
       logger.info(`调用 Claude (--continue, 工作目录: ${XIAOZHI_WORKSPACE})`);

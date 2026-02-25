@@ -44,6 +44,12 @@ export class SQLiteStorage {
     }
 
     this.db = new Database(dbPath);
+
+    // P1 性能优化：启用 WAL 模式提高并发性能
+    this.db.pragma('journal_mode = WAL');
+    // 设置繁忙超时，避免并发锁等待
+    this.db.pragma('busy_timeout = 5000');
+
     this.initTables();
   }
 
@@ -144,6 +150,38 @@ export class SQLiteStorage {
   getWorkersBySession(sessionId: string): WorkerRecord[] {
     const stmt = this.db.prepare('SELECT * FROM workers WHERE sessionId = ?');
     return stmt.all(sessionId) as WorkerRecord[];
+  }
+
+  /**
+   * 获取所有指定状态的 Worker
+   */
+  getWorkersByStatus(status: string): WorkerRecord[] {
+    const stmt = this.db.prepare('SELECT * FROM workers WHERE status = ?');
+    return stmt.all(status) as WorkerRecord[];
+  }
+
+  /**
+   * 获取所有运行中的 Worker
+   */
+  getRunningWorkers(): WorkerRecord[] {
+    const stmt = this.db.prepare("SELECT * FROM workers WHERE status = 'running'");
+    return stmt.all() as WorkerRecord[];
+  }
+
+  /**
+   * 获取所有活跃的 Worker（运行中或暂停）
+   */
+  getActiveWorkers(): WorkerRecord[] {
+    const stmt = this.db.prepare("SELECT * FROM workers WHERE status IN ('running', 'pending', 'paused')");
+    return stmt.all() as WorkerRecord[];
+  }
+
+  /**
+   * 获取所有 Worker
+   */
+  getAllWorkers(): WorkerRecord[] {
+    const stmt = this.db.prepare('SELECT * FROM workers ORDER BY createdAt DESC');
+    return stmt.all() as WorkerRecord[];
   }
 
   saveWorker(worker: Partial<WorkerRecord> & { id: string }): void {

@@ -92,3 +92,103 @@ export const CONFIG = {
     return getApiTimeout();
   },
 };
+
+// ==================== P1 统一路径配置管理 ====================
+
+/**
+ * 获取小智配置目录
+ * 优先级: 环境变量 XIAOZHI_HOME > 默认值 ~/.xiaozhi
+ */
+export function getXiaozhiHome(): string {
+  return process.env.XIAOZHI_HOME || path.join(os.homedir(), '.xiaozhi');
+}
+
+/**
+ * 获取小智工作目录
+ */
+export function getXiaozhiWorkspace(): string {
+  return path.join(getXiaozhiHome(), 'workspace');
+}
+
+/**
+ * 获取小智锁文件目录
+ */
+export function getXiaozhiLocksDir(): string {
+  return path.join(getXiaozhiHome(), 'locks');
+}
+
+/**
+ * 获取小智升级目录
+ */
+export function getXiaozhiUpgradesDir(): string {
+  return path.join(getXiaozhiHome(), 'upgrades');
+}
+
+/**
+ * 获取小智专家目录
+ */
+export function getXiaozhiExpertsDir(): string {
+  return path.join(getXiaozhiHome(), 'experts');
+}
+
+/**
+ * 获取小智 Workers 目录
+ */
+export function getXiaozhiWorkersDir(): string {
+  return path.join(getXiaozhiHome(), 'workers');
+}
+
+/**
+ * 获取小智数据库路径
+ */
+export function getXiaozhiDbPath(): string {
+  return path.join(getXiaozhiHome(), 'xiaozhi.db');
+}
+
+/**
+ * 获取小智系统提示词文件路径
+ */
+export function getSystemPromptPath(): string {
+  return path.join(getXiaozhiHome(), 'system-prompt.md');
+}
+
+/**
+ * 获取小智项目代码目录
+ * 优先级: 环境变量 XIAOZHI_DIR > 默认值 ~/data/claudeClaw/xiaozhi
+ */
+export function getXiaozhiProjectDir(): string {
+  return process.env.XIAOZHI_DIR || path.join(os.homedir(), 'data', 'claudeClaw', 'xiaozhi');
+}
+
+/**
+ * 统一路径配置对象
+ */
+export const PATHS = {
+  get XIAOZHI_HOME() {
+    return getXiaozhiHome();
+  },
+  get WORKSPACE() {
+    return getXiaozhiWorkspace();
+  },
+  get LOCKS_DIR() {
+    return getXiaozhiLocksDir();
+  },
+  get UPGRADES_DIR() {
+    return getXiaozhiUpgradesDir();
+  },
+  get EXPERTS_DIR() {
+    return getXiaozhiExpertsDir();
+  },
+  get WORKERS_DIR() {
+    return getXiaozhiWorkersDir();
+  },
+  get DB_PATH() {
+    return getXiaozhiDbPath();
+  },
+  get SYSTEM_PROMPT_FILE() {
+    return getSystemPromptPath();
+  },
+  get XIAOZHI_DIR() {
+    return getXiaozhiProjectDir();
+  },
+};

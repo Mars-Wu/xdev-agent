@@ -1,32 +1,98 @@
 // src/worker/hooks-receiver.ts
-// Hooks接收器 - 接收Worker的通知
+// HTTP 接收器 - 接收专家完成回调、升级 API
 
-import express, { Request, Response } from 'express';
-import { WorkerManager } from './manager';
-import { FeishuClient } from '../feishu/client';
-import { SessionManager } from '../session/manager';
+import express, { Request, Response, NextFunction } from 'express';
+import { ClaudeNativeAgent } from '../core/claude-native-agent';
+import { ExpertManager, ExpertMessage } from '../expert/manager';
+import { getUpgradeManager, UpgradeManager } from '../upgrade';
+import { validateApiToken } from '../upgrade/security-utils';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('hooks-receiver');
 
 export class HooksReceiver {
   private app: express.Application;
-  private workerManager: WorkerManager;
-  private feishuClient: FeishuClient;
-  private sessionManager: SessionManager;
-  private notificationThrottle: Map<string, number> = new Map();
+  private agent?: ClaudeNativeAgent;
+  private expertManager?: ExpertManager;
+  private upgradeManager?: UpgradeManager;
   private server?: ReturnType<express.Application['listen']>;
+  private apiToken: string | null = null;
 
-  constructor(
-    workerManager: WorkerManager,
-    feishuClient: FeishuClient,
-    sessionManager: SessionManager
-  ) {
-    this.workerManager = workerManager;
-    this.feishuClient = feishuClient;
-    this.sessionManager = sessionManager;
+  constructor() {
     this.app = express();
+    // 从环境变量读取 API Token
+    this.apiToken = process.env.XIAOZHI_API_TOKEN || null;
+    if (this.apiToken) {
+      logger.info('API Token 认证已启用');
+    } else {
+      logger.warn('API Token 未配置，升级 API 处于不安全状态。请设置 XIAOZHI_API_TOKEN 环境变量');
+    }
     this.setupRoutes();
+  }
+
+  /**
+   * 验证 API Token 的中间件
+   * 用于保护升级相关的敏感 API
+   */
+  private requireAuthToken(req: Request, res: Response, next: NextFunction): void {
+    // 如果没有配置 token，允许访问（向后兼容）
+    if (!this.apiToken) {
+      next();
+      return;
+    }
+
+    const providedToken = req.headers['x-xiaozhi-token'] as string;
+
+    if (!providedToken) {
+      res.status(401).json({ error: 'Missing authentication token' });
+      return;
+    }
+
+    // 使用常量时间比较防止时序攻击
+    if (!this.constantTimeCompare(providedToken, this.apiToken)) {
+      res.status(403).json({ error: 'Invalid authentication token' });
+      return;
+    }
+
+    next();
+  }
+
+  /**
+   * 常量时间字符串比较（防止时序攻击）
+   */
+  private constantTimeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+    let result = 0;
+    for (let i = 0; i < a.length; i++) {
+      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+  }
+
+  /**
+   * 设置小智 Agent
+   */
+  setAgent(agent: ClaudeNativeAgent): void {
+    this.agent = agent;
+    logger.info('HooksReceiver 已关联 ClaudeNativeAgent');
+  }
+
+  /**
+   * 设置专家管理器
+   */
+  setExpertManager(manager: ExpertManager): void {
+    this.expertManager = manager;
+    logger.info('HooksReceiver 已关联 ExpertManager');
+  }
+
+  /**
+   * 设置升级管理器
+   */
+  setUpgradeManager(manager: UpgradeManager): void {
+    this.upgradeManager = manager;
+    logger.info('HooksReceiver 已关联 UpgradeManager');
   }
 
   private setupRoutes(): void {
@@ -37,174 +103,618 @@ export class HooksReceiver {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
-    // 接收Notification Hook（Worker 进度通知）
-    this.app.post('/hooks/notification', this.handleNotification.bind(this));
+    // 队列状态（调试用）
+    this.app.get('/queue', (req: Request, res: Response) => {
+      if (!this.agent) {
+        res.json({ error: 'Agent not set' });
+        return;
+      }
+      res.json(this.agent.getQueueStatus());
+    });
 
-    // 接收Stop Hook（Worker 完成）
-    this.app.post('/hooks/stop', this.handleComplete.bind(this));
+    // 专家调用（小智调用）
+    this.app.post('/expert/call', this.handleExpertCall.bind(this));
 
-    // 接收SubagentStop Hook
-    this.app.post('/hooks/subagent-stop', this.handleSubagent.bind(this));
+    // 专家完成回调（专家完成后通知）
+    this.app.post('/expert/complete', this.handleExpertComplete.bind(this));
+
+    // 专家状态查询
+    this.app.get('/expert/status', this.handleExpertStatus.bind(this));
+
+    // 专家列表
+    this.app.get('/expert/list', this.handleExpertList.bind(this));
+
+    // P1: 动态创建专家
+    this.app.post('/expert/create', this.handleExpertCreate.bind(this));
+
+    // P1: 删除专家
+    this.app.delete('/expert/:name', this.handleExpertDelete.bind(this));
+
+    // P1: 专家间通信
+    this.app.post('/expert/message', this.handleExpertMessage.bind(this));
+
+    // P1: 获取专家消息
+    this.app.get('/expert/:name/messages', this.handleGetExpertMessages.bind(this));
+
+    // P1: 任务队列状态
+    this.app.get('/expert/queue', this.handleExpertQueueStatus.bind(this));
+
+    // P1: 清空任务队列
+    this.app.delete('/expert/queue', this.handleClearQueue.bind(this));
+
+    // P0: 强制停止专家
+    this.app.post('/expert/:name/stop', this.handleExpertStop.bind(this));
+
+    // P1: 获取/更新配置
+    this.app.get('/expert/config', this.handleGetConfig.bind(this));
+    this.app.put('/expert/config', this.handleUpdateConfig.bind(this));
+
+    // ==================== 升级 API ====================
+    // 所有升级 API 都需要 Token 认证
+
+    // 升级状态
+    this.app.get('/upgrade/status',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeStatus.bind(this));
+
+    // 开始升级
+    this.app.post('/upgrade/start',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeStart.bind(this));
+
+    // 提交代码变更
+    this.app.post('/upgrade/commit',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeCommit.bind(this));
+
+    // 编译
+    this.app.post('/upgrade/build',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeBuild.bind(this));
+
+    // 测试影子实例
+    this.app.post('/upgrade/test',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeTest.bind(this));
+
+    // 准备升级
+    this.app.post('/upgrade/prepare',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradePrepare.bind(this));
+
+    // 执行升级
+    this.app.post('/upgrade/execute',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeExecute.bind(this));
+
+    // 放弃升级
+    this.app.post('/upgrade/abort',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeAbort.bind(this));
+
+    // 升级历史
+    this.app.get('/upgrade/history',
+      this.requireAuthToken.bind(this),
+      this.handleUpgradeHistory.bind(this));
+
+    // 测试消息（给影子实例用）
+    this.app.post('/test/message', this.handleTestMessage.bind(this));
+
+    // 兼容旧的 Worker hooks
+    this.app.post('/hooks/stop', this.handleLegacyWorkerStop.bind(this));
   }
 
-  private async handleNotification(req: Request, res: Response): Promise<void> {
-    // 支持多种字段名格式
-    const workerId = req.body.worker_id || req.body.workerId;
-    const message = req.body.message || req.body.notification || '处理中';
-    const timestamp = req.body.timestamp;
+  /**
+   * 调用专家
+   */
+  private async handleExpertCall(req: Request, res: Response): Promise<void> {
+    const { expert, task, workDir } = req.body;
 
-    logger.info(`Received notification from worker ${workerId}: ${message?.slice(0, 50)}...`);
+    if (!expert || !task) {
+      res.status(400).json({ error: 'Missing expert or task' });
+      return;
+    }
 
-    if (!workerId) {
-      res.status(400).send('Missing worker_id');
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
       return;
     }
 
     try {
-      const worker = await this.workerManager.getStatus(workerId);
-      if (!worker) {
-        res.status(404).send('Worker not found');
-        return;
-      }
-
-      // 更新进度
-      worker.progress.currentStep = message;
-      worker.progress.lastUpdate = new Date(timestamp || Date.now());
-
-      // 检查是否应该节流通知
-      if (this.shouldThrottleNotification(workerId)) {
-        res.send('OK (throttled)');
-        return;
-      }
-
-      // 获取会话设置
-      const session = await this.sessionManager.get(worker.sessionId);
-      if (!session?.settings.notifyOnProgress) {
-        res.send('OK (notification disabled)');
-        return;
-      }
-
-      // 发送飞书通知
-      await this.feishuClient.sendCard(session.feishuChatId, {
-        header: {
-          title: { content: `📊 ${worker.name} 进度更新`, tag: 'plain_text' },
-          template: 'blue',
-        },
-        elements: [
-          {
-            tag: 'markdown',
-            content: `**当前步骤**: ${message}\n**状态**: 运行中\n**已运行**: ${this.formatDuration(worker.startedAt!)}`,
-          },
-        ],
+      await this.expertManager.callExpert({
+        expertName: expert,
+        task,
+        workDir,
       });
 
-      this.notificationThrottle.set(workerId, Date.now());
-      res.send('OK');
+      res.json({ status: 'ok', expert, message: '专家已启动' });
     } catch (error) {
-      logger.error('Handle notification error:', error);
-      res.status(500).send('Internal error');
+      logger.error('[Expert] 调用失败:', error);
+      res.status(500).json({ error: String(error) });
     }
   }
 
-  private async handleComplete(req: Request, res: Response): Promise<void> {
-    // 支持多种字段名格式
-    const workerId = req.body.worker_id || req.body.workerId;
-    const status = req.body.status || req.body.result || 'completed';
-    const result = req.body.result || req.body.summary || '任务完成';
-    const cost = req.body.cost || req.body.cost_usd || 0;
-    const duration = req.body.duration || req.body.duration_ms || 0;
+  /**
+   * 获取专家列表
+   */
+  private handleExpertList(req: Request, res: Response): void {
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
 
-    logger.info(`Received completion from worker ${workerId}, status: ${status}`);
+    const experts = this.expertManager.getExperts();
+    res.json({ experts });
+  }
 
-    if (!workerId) {
-      res.status(400).send('Missing worker_id');
+  /**
+   * 处理专家完成回调
+   */
+  private async handleExpertComplete(req: Request, res: Response): Promise<void> {
+    const { expert, success, result, task } = req.body;
+
+    logger.info(`[Expert] ${expert} 完成: success=${success}`);
+
+    if (!expert) {
+      res.status(400).json({ error: 'Missing expert name' });
       return;
     }
 
     try {
-      const worker = await this.workerManager.getStatus(workerId);
-      if (!worker) {
-        res.status(404).send('Worker not found');
-        return;
+      // 更新专家状态
+      if (this.expertManager) {
+        this.expertManager.handleExpertComplete(
+          expert,
+          success !== false,
+          result || ''
+        );
       }
 
-      // 更新Worker状态
-      await this.workerManager.updateStatus(workerId, {
-        status: status === 'success' || status === 'completed' ? 'completed' : 'failed',
-        completedAt: new Date(),
-        result: {
-          success: status === 'success' || status === 'completed',
-          summary: result || '任务完成',
-          cost: cost || 0,
-          duration: duration || 0,
-        },
-      });
+      // 转发给小智处理
+      if (this.agent) {
+        const resultText = typeof result === 'string' ? result : JSON.stringify(result || '');
+        const taskText = typeof task === 'string' ? task : '';
 
-      // 从会话的活跃Worker列表中移除
-      await this.sessionManager.removeWorker(worker.sessionId, workerId);
-
-      // 获取会话并发送完成通知
-      const session = await this.sessionManager.get(worker.sessionId);
-      if (session) {
-        const emoji = status === 'success' || status === 'completed' ? '✅' : '❌';
-        await this.feishuClient.sendCard(session.feishuChatId, {
-          header: {
-            title: { content: `${emoji} ${worker.name} 任务完成`, tag: 'plain_text' },
-            template: status === 'success' || status === 'completed' ? 'green' : 'red',
-          },
-          elements: [
-            {
-              tag: 'markdown',
-              content: `**状态**: ${status === 'success' || status === 'completed' ? '成功' : '失败'}\n**耗时**: ${this.formatDuration(worker.startedAt!, new Date())}\n**结果**:\n${result || '无详细结果'}`,
-            },
-          ],
+        await this.agent.handleExpertMessage({
+          expertName: expert,
+          success: success !== false,
+          result: resultText,
+          task: taskText,
         });
+
+        logger.info(`[Expert] ${expert} 结果已转发给小智`);
       }
 
-      res.send('OK');
+      res.json({ status: 'ok', expert });
     } catch (error) {
-      logger.error('Handle complete error:', error);
-      res.status(500).send('Internal error');
+      logger.error('[Expert] 处理完成回调失败:', error);
+      res.status(500).json({ error: 'Internal error' });
     }
   }
 
-  private async handleSubagent(req: Request, res: Response): Promise<void> {
+  /**
+   * 查询专家状态
+   */
+  private handleExpertStatus(req: Request, res: Response): void {
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    const status = this.expertManager.getAllStatus();
+    res.json({ experts: status });
+  }
+
+  /**
+   * P1: 动态创建专家
+   */
+  private async handleExpertCreate(req: Request, res: Response): Promise<void> {
+    const { name, description, specialties, customPrompt } = req.body;
+
+    if (!name || !description || !specialties) {
+      res.status(400).json({ error: 'Missing required fields: name, description, specialties' });
+      return;
+    }
+
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    try {
+      const config = await this.expertManager.createExpert(
+        name,
+        description,
+        specialties,
+        customPrompt
+      );
+      res.json({ status: 'ok', expert: config });
+    } catch (error) {
+      logger.error('[Expert] 创建失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * P1: 删除专家
+   */
+  private async handleExpertDelete(req: Request, res: Response): Promise<void> {
+    const { name } = req.params;
+
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    try {
+      const deleted = await this.expertManager.deleteExpert(name);
+      if (deleted) {
+        res.json({ status: 'ok', message: `专家 ${name} 已删除` });
+      } else {
+        res.status(404).json({ error: `专家 ${name} 不存在` });
+      }
+    } catch (error) {
+      logger.error('[Expert] 删除失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * P1: 专家间通信
+   */
+  private async handleExpertMessage(req: Request, res: Response): Promise<void> {
+    const { from, to, content } = req.body;
+
+    if (!from || !to || !content) {
+      res.status(400).json({ error: 'Missing required fields: from, to, content' });
+      return;
+    }
+
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    try {
+      await this.expertManager.sendMessage(from, to, content);
+      res.json({ status: 'ok', message: '消息已发送' });
+    } catch (error) {
+      logger.error('[Expert] 消息发送失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * P1: 获取专家消息
+   */
+  private handleGetExpertMessages(req: Request, res: Response): void {
+    const { name } = req.params;
+    const { limit } = req.query;
+
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    const messages = this.expertManager.getMessages(name, limit ? parseInt(limit as string, 10) : 10);
+    res.json({ expert: name, messages });
+  }
+
+  /**
+   * P1: 获取任务队列状态
+   */
+  private handleExpertQueueStatus(req: Request, res: Response): void {
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    const queueStatus = this.expertManager.getQueueStatus();
+    res.json(queueStatus);
+  }
+
+  /**
+   * P1: 清空任务队列
+   */
+  private handleClearQueue(req: Request, res: Response): void {
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    const count = this.expertManager.clearQueue();
+    res.json({ status: 'ok', cleared: count });
+  }
+
+  /**
+   * P0: 强制停止专家
+   */
+  private handleExpertStop(req: Request, res: Response): void {
+    const { name } = req.params;
+    const { reason } = req.body;
+
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    try {
+      this.expertManager.forceStopExpert(name, reason || 'API 请求');
+      res.json({ status: 'ok', message: `专家 ${name} 已停止` });
+    } catch (error) {
+      logger.error('[Expert] 停止失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * P1: 获取配置
+   */
+  private handleGetConfig(req: Request, res: Response): void {
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    const config = this.expertManager.getConfig();
+    res.json(config);
+  }
+
+  /**
+   * P1: 更新配置
+   */
+  private handleUpdateConfig(req: Request, res: Response): void {
+    const { maxConcurrent, defaultTimeout, preventRecursion } = req.body;
+
+    if (!this.expertManager) {
+      res.status(503).json({ error: 'ExpertManager not initialized' });
+      return;
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (maxConcurrent !== undefined) updates.maxConcurrent = maxConcurrent;
+    if (defaultTimeout !== undefined) updates.defaultTimeout = defaultTimeout;
+    if (preventRecursion !== undefined) updates.preventRecursion = preventRecursion;
+
+    this.expertManager.updateConfig(updates);
+    res.json({ status: 'ok', config: this.expertManager.getConfig() });
+  }
+
+  /**
+   * 兼容旧的 Worker stop hook
+   */
+  private async handleLegacyWorkerStop(req: Request, res: Response): Promise<void> {
     const workerId = req.body.worker_id || req.body.workerId;
-    const subagentId = req.body.subagent_id || req.body.subagentId;
-    const subagentType = req.body.subagent_type || req.body.subagentType;
-    const result = req.body.result;
+    const result = req.body.result || req.body.summary || '';
 
-    logger.info(`Received subagent notification: ${subagentType} for worker ${workerId}`);
+    logger.info(`[Legacy] Worker ${workerId} 完成`);
 
-    // 子代理完成，可选通知（这里只记录日志）
-    logger.debug(`Subagent ${subagentType} (${subagentId}) completed for worker ${workerId}`);
+    // 转换为专家消息格式
+    if (this.agent) {
+      await this.agent.handleExpertMessage({
+        expertName: 'worker',
+        success: true,
+        result: typeof result === 'string' ? result : JSON.stringify(result),
+        task: workerId,
+      });
+    }
 
     res.send('OK');
   }
 
-  private shouldThrottleNotification(workerId: string): boolean {
-    const lastTime = this.notificationThrottle.get(workerId) || 0;
-    const throttleInterval = 30000; // 30秒
-    return Date.now() - lastTime < throttleInterval;
+  // ==================== 升级 API 处理 ====================
+
+  /**
+   * 获取升级状态
+   */
+  private handleUpgradeStatus(req: Request, res: Response): void {
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    const status = this.upgradeManager.getStatus();
+    res.json(status);
   }
 
-  private formatDuration(start: Date, end: Date = new Date()): string {
-    const seconds = Math.floor((end.getTime() - start.getTime()) / 1000);
-    if (seconds < 60) return `${seconds}秒`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}分钟`;
-    return `${Math.floor(seconds / 3600)}小时${Math.floor((seconds % 3600) / 60)}分钟`;
+  /**
+   * 开始升级
+   */
+  private async handleUpgradeStart(req: Request, res: Response): Promise<void> {
+    const { description } = req.body;
+
+    if (!description) {
+      res.status(400).json({ error: 'Missing description' });
+      return;
+    }
+
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      const record = await this.upgradeManager.startUpgrade({ description });
+      res.json({ status: 'ok', record });
+    } catch (error) {
+      logger.error('[Upgrade] 开始升级失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 提交代码变更
+   */
+  private async handleUpgradeCommit(req: Request, res: Response): Promise<void> {
+    const { message } = req.body;
+
+    if (!message) {
+      res.status(400).json({ error: 'Missing message' });
+      return;
+    }
+
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      const commit = await this.upgradeManager.commitChanges(message);
+      res.json({ status: 'ok', commit });
+    } catch (error) {
+      logger.error('[Upgrade] 提交变更失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 编译
+   */
+  private async handleUpgradeBuild(req: Request, res: Response): Promise<void> {
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      await this.upgradeManager.build();
+      res.json({ status: 'ok', message: '编译完成' });
+    } catch (error) {
+      logger.error('[Upgrade] 编译失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 测试影子实例
+   */
+  private async handleUpgradeTest(req: Request, res: Response): Promise<void> {
+    const { tests } = req.body;
+
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      const result = await this.upgradeManager.testShadow(tests);
+      res.json({ status: 'ok', ...result });
+    } catch (error) {
+      logger.error('[Upgrade] 测试失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 准备升级
+   */
+  private async handleUpgradePrepare(req: Request, res: Response): Promise<void> {
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      const scriptPath = await this.upgradeManager.prepareUpgrade();
+      res.json({ status: 'ok', scriptPath });
+    } catch (error) {
+      logger.error('[Upgrade] 准备升级失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 执行升级
+   */
+  private async handleUpgradeExecute(req: Request, res: Response): Promise<void> {
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      await this.upgradeManager.executeUpgrade();
+      res.json({ status: 'ok', message: '升级已启动' });
+    } catch (error) {
+      logger.error('[Upgrade] 执行升级失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 放弃升级
+   */
+  private async handleUpgradeAbort(req: Request, res: Response): Promise<void> {
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      await this.upgradeManager.abortUpgrade();
+      res.json({ status: 'ok', message: '升级已放弃' });
+    } catch (error) {
+      logger.error('[Upgrade] 放弃升级失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 升级历史
+   */
+  private async handleUpgradeHistory(req: Request, res: Response): Promise<void> {
+    const { limit } = req.query;
+
+    if (!this.upgradeManager) {
+      res.status(503).json({ error: 'UpgradeManager not initialized' });
+      return;
+    }
+
+    try {
+      const history = await this.upgradeManager.getHistory(limit ? parseInt(limit as string, 10) : 10);
+      res.json({ history });
+    } catch (error) {
+      logger.error('[Upgrade] 获取历史失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  }
+
+  /**
+   * 测试消息（给影子实例用）
+   */
+  private async handleTestMessage(req: Request, res: Response): Promise<void> {
+    const { content } = req.body;
+
+    if (!content) {
+      res.status(400).json({ error: 'Missing content' });
+      return;
+    }
+
+    if (!this.agent) {
+      res.status(503).json({ error: 'Agent not initialized' });
+      return;
+    }
+
+    try {
+      // 模拟飞书消息处理
+      const response = await this.agent.processTestMessage(content);
+      res.json({ status: 'ok', response });
+    } catch (error) {
+      logger.error('[Test] 测试消息处理失败:', error);
+      res.status(500).json({ error: String(error) });
+    }
   }
 
   listen(port: number): void {
     this.server = this.app.listen(port, () => {
-      logger.info(`Hooks receiver listening on port ${port}`);
+      logger.info(`HTTP receiver listening on port ${port}`);
     });
   }
 
   close(): void {
     if (this.server) {
       this.server.close();
-      logger.info('Hooks receiver closed');
+      logger.info('HTTP receiver closed');
     }
   }
 }

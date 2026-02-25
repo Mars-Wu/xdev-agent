@@ -1,0 +1,28 @@
+{
+  "id": "w_mlz514nx_kg1bko",
+  "name": "worker-2026-02-23T12-13-26",
+  "sessionId": "default",
+  "status": "completed",
+  "tmuxSession": "worker_mlz514nx",
+  "claudeSessionId": "w_mlz514nx_kg1bko",
+  "task": {
+    "description": "测试Worker",
+    "workDir": "/home/wxy/data/cicishop",
+    "model": "glm-5"
+  },
+  "progress": {
+    "percentage": 0,
+    "currentStep": "初始化",
+    "toolCalls": 0,
+    "filesModified": 0,
+    "lastUpdate": "2026-02-23T12:13:26.284Z"
+  },
+  "hooks": {
+    "progressFile": "/home/wxy/data/claudeClaw/xiaozhi/workers/worker-2026-02-23T12-13-26/progress.json",
+    "notifyScript": "/home/wxy/data/claudeClaw/xiaozhi/scripts/notify_xiaozhi.sh",
+    "completedScript": "/home/wxy/data/claudeClaw/xiaozhi/scripts/worker_completed.sh"
+  },
+  "createdAt": "2026-02-23T12:13:26.284Z",
+  "startedAt": "2026-02-23T12:13:26.284Z",
+  "completedAt": "2026-02-23T12:53:41.909Z"
+}

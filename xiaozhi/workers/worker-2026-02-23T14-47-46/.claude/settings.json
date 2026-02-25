@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "XIAOZHI_HOST=localhost XIAOZHI_PORT=8081 /home/wxy/data/claudeClaw/xiaozhi/scripts/notify_xiaozhi.sh w_mlzajm6h_2v2e2v"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "XIAOZHI_HOST=localhost XIAOZHI_PORT=8081 /home/wxy/data/claudeClaw/xiaozhi/scripts/worker_completed.sh w_mlzajm6h_2v2e2v"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "XIAOZHI_HOST=localhost XIAOZHI_PORT=8081 /home/wxy/data/claudeClaw/xiaozhi/scripts/subagent_notify.sh w_mlzajm6h_2v2e2v"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$(date -Iseconds): tool_used\" >> /home/wxy/data/claudeClaw/xiaozhi/workers/worker-2026-02-23T14-47-46/actions.log"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,191 +1,168 @@
-# AI管家小智
+# 小智 (Xiaozhi) - AI 管家系统
 
-基于 Claude 的智能管家系统，通过飞书与用户通信，支持简单任务直接处理和复杂任务创建 Worker 处理。
+基于 Claude CLI 的智能管家系统，通过飞书提供对话接口，拥有 AI 专家团队处理特定类型任务，支持自我升级。
 
-## 功能特性
+## 架构概览
 
-- **飞书集成**: 通过飞书机器人接收和发送消息
-- **智能任务处理**: 自动判断任务复杂度
-  - 简单任务：直接由小智处理
-  - 复杂任务：创建独立 Worker 处理
-- **Worker 管理**: 在 tmux 中运行 claude CLI，支持进度追踪
-- **Hooks 通知**: Worker 通过 Hooks 主动通知进度，减少轮询
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          飞书用户                                │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ ① WebSocket 消息
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Node.js 服务进程                            │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │               ClaudeNativeAgent（小智）                   │   │
+│  │                     消息队列                               │   │
+│  │   [主人@飞书] → [专家:coder] → [专家:analyst] → ...       │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                             │                                  │
+│  ┌──────────────────────────┴──────────────────────────────┐   │
+│  │                  HTTP Server (:8081)                     │   │
+│  │   POST /expert/call     - 调用专家                       │   │
+│  │   POST /expert/complete - 专家完成回调                   │   │
+│  │   GET  /expert/list     - 专家列表                       │   │
+│  │   POST /upgrade/start   - 开始升级                       │   │
+│  │   POST /upgrade/test    - 测试影子实例                   │   │
+│  │   POST /upgrade/execute - 执行升级                       │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+        │                    ▲                    ▲
+        │ 飞书回复            │ spawn             │ HTTP 回调
+        ▼                    │                   │
+┌─────────────────┐    ┌─────┴─────┐    ┌───────┴───────┐
+│    飞书用户      │    │ 代码专家   │    │  分析专家     │
+│                 │    │  coder    │    │  analyst     │
+└─────────────────┘    └───────────┘    └───────────────┘
+```
+
+## AI 专家团队
+
+| 专家 | 专长 | 适用场景 |
+|------|------|----------|
+| **coder** | 代码编写、重构、调试 | 写代码、改代码、修 bug |
+| **analyst** | 日志分析、数据诊断 | 分析日志、查问题 |
+| **operator** | 系统运维、部署 | 重启服务、部署应用 |
+| **researcher** | 信息收集、调研 | 技术调研、文档整理 |
+
+## 自我升级系统
+
+小智可以安全地升级自己，流程如下：
+
+```
+1. 准备阶段（当前小智执行）
+   ├── Git 备份当前代码
+   ├── 修改代码
+   ├── Git commit 变更
+   └── 编译新版本
+
+2. 测试阶段
+   ├── 启动影子实例 (:8090)
+   ├── 发送测试消息
+   ├── 检查响应
+   └── 飞书通知测试结果
+
+3. 执行阶段（tmux 守护）
+   ├── tmux new -s tmux_upgradeXiaoZhi
+   ├── 停止服务
+   ├── 切换版本
+   ├── 启动服务
+   └── 健康检查
+
+4. 完成阶段（新版小智执行）
+   ├── 检查升级状态
+   ├── 飞书通知结果
+   └── 关闭 tmux 会话
+```
+
+### 升级 API
+
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `/upgrade/status` | GET | 获取升级状态 |
+| `/upgrade/start` | POST | 开始升级 |
+| `/upgrade/commit` | POST | 提交代码变更 |
+| `/upgrade/build` | POST | 编译代码 |
+| `/upgrade/test` | POST | 测试影子实例 |
+| `/upgrade/prepare` | POST | 准备升级 |
+| `/upgrade/execute` | POST | 执行升级 |
+| `/upgrade/abort` | POST | 放弃升级 |
+| `/upgrade/history` | GET | 升级历史 |
 
 ## 目录结构
 
 ```
 xiaozhi/
 ├── src/
-│   ├── index.ts              # 入口文件
+│   ├── index.ts                     # 主入口
 │   ├── core/
-│   │   ├── xiaozhi.ts        # 小智核心服务
-│   │   └── message-handler.ts # 消息处理器
-│   ├── feishu/
-│   │   ├── client.ts         # 飞书客户端
-│   │   └── types.ts          # 类型定义
-│   ├── session/
-│   │   ├── manager.ts        # 会话管理器
-│   │   └── types.ts          # 类型定义
+│   │   └── claude-native-agent.ts   # 小智 Agent
+│   ├── expert/
+│   │   └── manager.ts               # 专家管理器
+│   ├── upgrade/                     # 自我升级系统
+│   │   ├── types.ts                 # 类型定义
+│   │   ├── recorder.ts              # 升级记录
+│   │   ├── shadow.ts                # 影子实例
+│   │   ├── tester.ts                # 测试消息
+│   │   └── manager.ts               # 升级管理器
 │   ├── worker/
-│   │   ├── manager.ts        # Worker管理器
-│   │   ├── factory.ts        # Worker工厂
-│   │   ├── hooks-receiver.ts # Hooks接收器
-│   │   └── types.ts          # 类型定义
-│   ├── storage/
-│   │   └── sqlite.ts         # SQLite存储
-│   └── utils/
-│       ├── tmux.ts           # tmux工具
-│       └── logger.ts         # 日志工具
-├── scripts/
-│   ├── notify_xiaozhi.sh     # 通知脚本
-│   ├── worker_completed.sh   # 完成脚本
-│   └── subagent_notify.sh    # 子代理通知
-├── config/
-│   └── config.yaml           # 配置文件
-├── package.json
-├── tsconfig.json
-├── xiaozhi.service           # Systemd服务
-├── install-xiaozhi.sh        # 安装脚本
-└── .env.example              # 环境变量示例
+│   │   └── hooks-receiver.ts        # HTTP 接收器
+│   ├── feishu/                      # 飞书客户端
+│   ├── storage/                     # 数据存储
+│   └── utils/                       # 工具函数
+└── package.json
+
+~/.xiaozhi/
+├── experts/                         # 专家配置
+│   ├── coder/CLAUDE.md
+│   ├── analyst/CLAUDE.md
+│   ├── operator/CLAUDE.md
+│   └── researcher/CLAUDE.md
+├── upgrades/                        # 升级记录
+│   └── 2026-02-25_001/
+│       ├── state.json               # 升级状态
+│       └── execute.sh               # 执行脚本
+├── system-prompt.md                 # 小智提示词
+└── xiaozhi.db                       # 数据库
 ```
 
-## 快速开始
+## HTTP API
 
-### 1. 安装依赖
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/queue` | GET | 队列状态 |
+| `/expert/call` | POST | 调用专家 |
+| `/expert/complete` | POST | 专家完成回调 |
+| `/expert/list` | GET | 专家列表 |
+| `/expert/status` | GET | 专家状态 |
+
+## 技术特点
+
+1. **专家系统** - 不同专家处理不同类型任务
+2. **统一架构** - 小智和专家都用 `claude --print`
+3. **消息队列** - 飞书和专家消息排队处理
+4. **并行处理** - 小智不等待专家，专家完成后回调
+5. **自我升级** - 安全升级，测试通过才执行
+6. **tmux 守护** - 升级过程独立于服务进程
+
+## 服务管理
 
 ```bash
-cd xiaozhi
-npm install
-```
-
-### 2. 配置环境变量
-
-```bash
-cp .env.example .env
-# 编辑 .env 填写飞书配置
-```
-
-必填配置：
-- `FEISHU_APP_ID`: 飞书应用 ID
-- `FEISHU_APP_SECRET`: 飞书应用密钥
-
-### 3. 编译
-
-```bash
-npm run build
-```
-
-### 4. 运行
-
-开发模式：
-```bash
-npm run dev
-```
-
-生产模式：
-```bash
-npm start
-```
-
-## Systemd 部署
-
-### 一键安装
-
-```bash
-sudo ./install-xiaozhi.sh
-```
-
-### 手动安装
-
-1. 创建用户和目录：
-```bash
-sudo useradd -r -s /bin/bash xiaozhi
-sudo mkdir -p /var/lib/xiaozhi/{data,workers,scripts}
-sudo mkdir -p /var/log/xiaozhi
-```
-
-2. 复制文件：
-```bash
-sudo cp -r dist package.json node_modules /opt/xiaozhi/
-sudo cp scripts/*.sh /var/lib/xiaozhi/scripts/
-sudo chmod +x /var/lib/xiaozhi/scripts/*.sh
-```
-
-3. 创建环境配置：
-```bash
-sudo mkdir -p /etc/xiaozhi
-sudo cp .env.example /etc/xiaozhi/environment
-# 编辑 /etc/xiaozhi/environment
-```
-
-4. 安装服务：
-```bash
-sudo cp xiaozhi.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable xiaozhi
-sudo systemctl start xiaozhi
-```
-
-### 管理命令
-
-```bash
-# 启动
-sudo systemctl start xiaozhi
-
-# 停止
-sudo systemctl stop xiaozhi
-
-# 查看状态
-sudo systemctl status xiaozhi
-
-# 查看日志
-sudo journalctl -u xiaozhi -f
-```
-
-## 使用说明
-
-### 基本对话
-
-直接发送消息，小智会处理并回复：
-```
-用户: 你好
-小智: 你好！我是AI管家小智 👋 有什么我可以帮你的吗？
-```
-
-### 命令
-
-- `/help` 或 `/帮助` - 显示帮助
-- `/worker list` - 列出所有 Worker
-- `/worker progress <id>` - 查看 Worker 进度
-- `/worker stop <id>` - 停止 Worker
-- `/status` - 查看会话状态
-
-### Worker 自动创建
-
-当任务复杂度较高时，小智会自动创建 Worker：
-
-```
-用户: 帮我重构整个认证模块
-小智: 这是一个复杂任务，我将创建一个 Worker 来处理...
-
-🚀 Worker已创建
-名称: Worker-abc123
-ID: w_abc123
-状态: 运行中
-```
-
-## 健康检查
-
-```bash
-curl http://localhost:8081/health
+systemctl --user start xiaozhi    # 启动
+systemctl --user stop xiaozhi     # 停止
+systemctl --user restart xiaozhi  # 重启
+journalctl --user -u xiaozhi -f   # 日志
 ```
 
 ## 依赖
 
 - Node.js >= 18
-- tmux
-- jq (用于 Hook 脚本)
 - SQLite3
+- Claude CLI
+- tmux（升级功能需要）
 
 ## 许可证
 

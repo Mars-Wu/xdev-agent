@@ -242,8 +242,9 @@ program.command('attach <worker-id>')
 
       console.log(`Attaching to worker ${workerId}...`);
       console.log('Press Ctrl+B then D to detach.');
-      const { execSync } = await import('child_process');
-      execSync(`tmux attach -t ${worker.tmuxSession}`, { stdio: 'inherit' });
+      // P0 安全修复：使用 spawn 数组参数避免命令注入
+      const { spawn } = await import('child_process');
+      spawn('tmux', ['attach', '-t', worker.tmuxSession], { stdio: 'inherit' });
     } catch (error) {
       console.error('Failed to attach to worker:', error);
       process.exit(1);

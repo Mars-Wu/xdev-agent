@@ -10,6 +10,14 @@ export interface TmuxSessionOptions {
   name: string;
   cwd?: string;
   detached?: boolean;
+  width?: number;
+  height?: number;
+}
+
+export interface SendKeysOptions {
+  sessionName: string;
+  keys: string;
+  enter?: boolean;  // 是否自动添加回车
 }
 
 export class TmuxClient {
@@ -20,6 +28,12 @@ export class TmuxClient {
     const args = ['new-session', '-d', '-s', options.name];
     if (options.cwd) {
       args.push('-c', options.cwd);
+    }
+    if (options.width) {
+      args.push('-x', String(options.width));
+    }
+    if (options.height) {
+      args.push('-y', String(options.height));
     }
 
     await this.runTmuxCommand(args);
@@ -38,14 +52,19 @@ export class TmuxClient {
   }
 
   /**
-   * 向会话发送按键（自动添加回车）
+   * 向会话发送按键
+   * @param sessionName 会话名
+   * @param keys 按键内容
+   * @param enter 是否自动添加回车（默认 true）
    */
-  async sendKeys(sessionName: string, keys: string): Promise<void> {
+  async sendKeys(sessionName: string, keys: string, enter: boolean = true): Promise<void> {
     if (keys) {
       await this.runTmuxCommand(['send-keys', '-t', sessionName, '-l', keys]);
     }
     // 发送回车
-    await this.runTmuxCommand(['send-keys', '-t', sessionName, 'Enter']);
+    if (enter) {
+      await this.runTmuxCommand(['send-keys', '-t', sessionName, 'Enter']);
+    }
   }
 
   /**
@@ -120,6 +139,20 @@ export class TmuxClient {
       return stdout.trim().split('\n').filter(Boolean);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * 获取会话中当前运行的命令
+   */
+  async getPaneCommand(sessionName: string): Promise<string> {
+    try {
+      const { stdout } = await execAsync(
+        `tmux display-message -t ${sessionName} -p '#{pane_current_command}'`
+      );
+      return stdout.trim();
+    } catch {
+      return '';
     }
   }
 

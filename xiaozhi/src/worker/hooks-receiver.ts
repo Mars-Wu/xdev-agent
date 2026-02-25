@@ -1,11 +1,9 @@
 // src/worker/hooks-receiver.ts
-// HTTP 接收器 - 接收专家完成回调、升级 API
+// HTTP 接收器 - 接收专家完成回调
 
 import express, { Request, Response, NextFunction } from 'express';
 import { ClaudeNativeAgent } from '../core/claude-native-agent';
 import { ExpertManager, ExpertMessage } from '../expert/manager';
-import { getUpgradeManager, UpgradeManager } from '../upgrade';
-import { validateApiToken } from '../upgrade/security-utils';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('hooks-receiver');
@@ -14,7 +12,6 @@ export class HooksReceiver {
   private app: express.Application;
   private agent?: ClaudeNativeAgent;
   private expertManager?: ExpertManager;
-  private upgradeManager?: UpgradeManager;
   private server?: ReturnType<express.Application['listen']>;
   private apiToken: string | null = null;
 
@@ -24,8 +21,6 @@ export class HooksReceiver {
     this.apiToken = process.env.XIAOZHI_API_TOKEN || null;
     if (this.apiToken) {
       logger.info('API Token 认证已启用');
-    } else {
-      logger.warn('API Token 未配置，升级 API 处于不安全状态。请设置 XIAOZHI_API_TOKEN 环境变量');
     }
     this.setupRoutes();
   }
@@ -87,14 +82,6 @@ export class HooksReceiver {
     logger.info('HooksReceiver 已关联 ExpertManager');
   }
 
-  /**
-   * 设置升级管理器
-   */
-  setUpgradeManager(manager: UpgradeManager): void {
-    this.upgradeManager = manager;
-    logger.info('HooksReceiver 已关联 UpgradeManager');
-  }
-
   private setupRoutes(): void {
     this.app.use(express.json());
 
@@ -148,54 +135,6 @@ export class HooksReceiver {
     // P1: 获取/更新配置
     this.app.get('/expert/config', this.handleGetConfig.bind(this));
     this.app.put('/expert/config', this.handleUpdateConfig.bind(this));
-
-    // ==================== 升级 API ====================
-    // 所有升级 API 都需要 Token 认证
-
-    // 升级状态
-    this.app.get('/upgrade/status',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeStatus.bind(this));
-
-    // 开始升级
-    this.app.post('/upgrade/start',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeStart.bind(this));
-
-    // 提交代码变更
-    this.app.post('/upgrade/commit',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeCommit.bind(this));
-
-    // 编译
-    this.app.post('/upgrade/build',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeBuild.bind(this));
-
-    // 测试影子实例
-    this.app.post('/upgrade/test',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeTest.bind(this));
-
-    // 准备升级
-    this.app.post('/upgrade/prepare',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradePrepare.bind(this));
-
-    // 执行升级
-    this.app.post('/upgrade/execute',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeExecute.bind(this));
-
-    // 放弃升级
-    this.app.post('/upgrade/abort',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeAbort.bind(this));
-
-    // 升级历史
-    this.app.get('/upgrade/history',
-      this.requireAuthToken.bind(this),
-      this.handleUpgradeHistory.bind(this));
 
     // 测试消息（给影子实例用）
     this.app.post('/test/message', this.handleTestMessage.bind(this));
@@ -500,183 +439,6 @@ export class HooksReceiver {
     }
 
     res.send('OK');
-  }
-
-  // ==================== 升级 API 处理 ====================
-
-  /**
-   * 获取升级状态
-   */
-  private handleUpgradeStatus(req: Request, res: Response): void {
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    const status = this.upgradeManager.getStatus();
-    res.json(status);
-  }
-
-  /**
-   * 开始升级
-   */
-  private async handleUpgradeStart(req: Request, res: Response): Promise<void> {
-    const { description } = req.body;
-
-    if (!description) {
-      res.status(400).json({ error: 'Missing description' });
-      return;
-    }
-
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      const record = await this.upgradeManager.startUpgrade({ description });
-      res.json({ status: 'ok', record });
-    } catch (error) {
-      logger.error('[Upgrade] 开始升级失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 提交代码变更
-   */
-  private async handleUpgradeCommit(req: Request, res: Response): Promise<void> {
-    const { message } = req.body;
-
-    if (!message) {
-      res.status(400).json({ error: 'Missing message' });
-      return;
-    }
-
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      const commit = await this.upgradeManager.commitChanges(message);
-      res.json({ status: 'ok', commit });
-    } catch (error) {
-      logger.error('[Upgrade] 提交变更失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 编译
-   */
-  private async handleUpgradeBuild(req: Request, res: Response): Promise<void> {
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      await this.upgradeManager.build();
-      res.json({ status: 'ok', message: '编译完成' });
-    } catch (error) {
-      logger.error('[Upgrade] 编译失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 测试影子实例
-   */
-  private async handleUpgradeTest(req: Request, res: Response): Promise<void> {
-    const { tests } = req.body;
-
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      const result = await this.upgradeManager.testShadow(tests);
-      res.json({ status: 'ok', ...result });
-    } catch (error) {
-      logger.error('[Upgrade] 测试失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 准备升级
-   */
-  private async handleUpgradePrepare(req: Request, res: Response): Promise<void> {
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      const scriptPath = await this.upgradeManager.prepareUpgrade();
-      res.json({ status: 'ok', scriptPath });
-    } catch (error) {
-      logger.error('[Upgrade] 准备升级失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 执行升级
-   */
-  private async handleUpgradeExecute(req: Request, res: Response): Promise<void> {
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      await this.upgradeManager.executeUpgrade();
-      res.json({ status: 'ok', message: '升级已启动' });
-    } catch (error) {
-      logger.error('[Upgrade] 执行升级失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 放弃升级
-   */
-  private async handleUpgradeAbort(req: Request, res: Response): Promise<void> {
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      await this.upgradeManager.abortUpgrade();
-      res.json({ status: 'ok', message: '升级已放弃' });
-    } catch (error) {
-      logger.error('[Upgrade] 放弃升级失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
-  }
-
-  /**
-   * 升级历史
-   */
-  private async handleUpgradeHistory(req: Request, res: Response): Promise<void> {
-    const { limit } = req.query;
-
-    if (!this.upgradeManager) {
-      res.status(503).json({ error: 'UpgradeManager not initialized' });
-      return;
-    }
-
-    try {
-      const history = await this.upgradeManager.getHistory(limit ? parseInt(limit as string, 10) : 10);
-      res.json({ history });
-    } catch (error) {
-      logger.error('[Upgrade] 获取历史失败:', error);
-      res.status(500).json({ error: String(error) });
-    }
   }
 
   /**

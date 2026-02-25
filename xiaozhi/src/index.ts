@@ -1,6 +1,6 @@
 // src/index.ts
 // AI管家小智 - 入口
-// 消息队列 + 专家系统 + Claude CLI 原生持久化 + 自我升级
+// 消息队列 + 专家系统 + Claude CLI 原生持久化
 
 import 'dotenv/config';
 import { FeishuClient } from './feishu/client';
@@ -8,7 +8,6 @@ import { ClaudeNativeAgent } from './core/claude-native-agent';
 import { HooksReceiver } from './worker/hooks-receiver';
 import { ExpertManager } from './expert/manager';
 import { SQLiteStorage } from './storage/sqlite';
-import { getUpgradeManager } from './upgrade';
 import { createLogger } from './utils/logger';
 import * as path from 'path';
 import * as os from 'os';
@@ -18,7 +17,7 @@ const logger = createLogger('main');
 async function main() {
   logger.info('AI管家小智启动中...');
   logger.info('==========================================');
-  logger.info('架构: 消息队列 + 专家系统 + Claude CLI + 自我升级');
+  logger.info('架构: 消息队列 + 专家系统 + Claude CLI');
   logger.info('==========================================');
 
   const xiaozhiHome = process.env.XIAOZHI_HOME || path.join(os.homedir(), '.xiaozhi');
@@ -73,35 +72,19 @@ async function main() {
     autoCompact: config.autoCompact,
   });
 
-  // 6. 升级管理器
-  const upgradeManager = getUpgradeManager();
-  // 设置飞书通知器
-  upgradeManager.setFeishuNotifier(async (message: string) => {
-    await agent.sendFeishuNotification(message);
-  });
-  hooksReceiver.setUpgradeManager(upgradeManager);
-  logger.info('升级管理器已初始化');
-
-  // 7. 关联组件
+  // 6. 关联组件
   hooksReceiver.setAgent(agent);
   hooksReceiver.setExpertManager(expertManager);
   logger.info('组件已关联');
 
-  // 8. 消息处理
+  // 7. 消息处理
   feishuClient.setMessageHandler(async (msg) => {
     await agent.handleMessage(msg);
   });
 
-  // 9. 启动
+  // 8. 启动
   await agent.start();
   await feishuClient.start();
-
-  // 10. 检查升级结果（新版小智启动时）
-  const upgradeResult = await upgradeManager.checkUpgradeResult();
-  if (upgradeResult.hasPending) {
-    logger.info('检测到待处理的升级结果');
-    await upgradeManager.completeUpgrade();
-  }
 
   // 显示专家列表
   const experts = expertManager.getExperts();

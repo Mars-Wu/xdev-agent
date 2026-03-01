@@ -44,32 +44,31 @@ claudeClaw/
 │   │   ├── index.ts                  # 主入口
 │   │   ├── config.ts                 # 统一配置管理
 │   │   ├── core/
-│   │   │   └── claude-native-agent.ts # 核心 Agent（消息队列、Claude 调用）
+│   │   │   └── claude-native-agent.ts # 核心 Agent（消息队列、Claude 调用、记忆压缩）
+│   │   ├── api/
+│   │   │   └── hooks-receiver.ts     # HTTP API 服务器（专家管理、钩子）
 │   │   ├── feishu/
 │   │   │   ├── client.ts             # 飞书 WebSocket 客户端
 │   │   │   └── types.ts              # 飞书消息类型
 │   │   ├── expert/
-│   │   │   └── manager.ts            # 专家管理器
-│   │   ├── worker/
-│   │   │   ├── manager.ts            # Worker 生命周期管理
-│   │   │   ├── factory.ts            # Worker 工厂
-│   │   │   ├── hooks-receiver.ts     # HTTP Hooks 接收器
-│   │   │   └── types.ts              # Worker 类型定义
-│   │   ├── session/
-│   │   │   └── manager.ts            # 会话管理器
+│   │   │   ├── manager.ts            # 专家管理器
+│   │   │   ├── executor.ts           # 专家执行器
+│   │   │   ├── session-manager.ts    # 专家会话管理
+│   │   │   └── types.ts              # 专家类型定义
+│   │   ├── monitor/
+│   │   │   ├── memory-monitor.ts     # 内存监控定时任务
+│   │   │   └── index.ts              # 监控模块导出
 │   │   ├── storage/
-│   │   │   └── sqlite.ts             # SQLite 存储层
-│   │   ├── utils/
-│   │   │   ├── logger.ts             # 日志工具
-│   │   │   ├── tmux.ts               # tmux 客户端
-│   │   │   └── shell-utils.ts        # Shell 工具
-│   │   └── cli/
-│   │       └── worker-cli.ts         # xiaozhi-worker CLI
+│   │   │   └── sqlite.ts             # SQLite 存储层（FTS5、记忆压缩）
+│   │   └── utils/
+│   │       ├── logger.ts             # 日志工具
+│   │       ├── errors.ts             # 错误处理
+│   │       └── shell-utils.ts        # Shell 工具
 │   ├── config/
 │   │   └── config.yaml               # 配置文件
-│   ├── scripts/                      # Hook 脚本
 │   └── install-xiaozhi.sh            # 安装脚本
 ├── docs/                             # 文档目录
+│   └── AI管家小智-架构说明.md        # 架构文档
 └── CLAUDE.md                         # 项目说明（符号链接）
 ```
 
@@ -113,8 +112,8 @@ claudeClaw/
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
-│  │  FeishuClient   │  │  ExpertManager  │  │  WorkerManager  │     │
-│  │  (飞书 WebSocket)│  │  (专家系统)      │  │  (Worker 管理)   │     │
+│  │  FeishuClient   │  │  ExpertManager  │  │ MemoryMonitor   │     │
+│  │  (飞书 WebSocket)│  │  (专家系统)      │  │  (内存监控)      │     │
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
 │           │                   │                    │               │
 │           └───────────────────┴────────────────────┘               │
@@ -390,18 +389,19 @@ systemctl --user status xiaozhi
 journalctl --user -u xiaozhi -f
 ```
 
-### 6.2 CLI 工具
+### 6.2 HTTP API 调用
 
 ```bash
-# 创建 Worker
-xiaozhi-worker create "任务描述" [--model <模型>] [--work-dir <目录>]
+# 调用专家
+curl -X POST http://localhost:8081/api/experts/coder/call \
+  -H "Content-Type: application/json" \
+  -d '{"task": "重构登录模块"}'
 
-# 查看 Worker
-xiaozhi-worker list [--all]
-xiaozhi-worker status <id>
+# 查看专家列表
+curl http://localhost:8081/api/experts
 
-# 停止 Worker
-xiaozhi-worker stop <id> [--force]
+# 查看队列状态
+curl http://localhost:8081/api/experts/queue
 ```
 
 ---

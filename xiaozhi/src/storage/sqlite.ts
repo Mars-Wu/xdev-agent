@@ -154,6 +154,60 @@ export class SQLiteStorage {
       CREATE INDEX IF NOT EXISTS idx_expert_sessions_status ON expert_sessions(status);
       CREATE INDEX IF NOT EXISTS idx_expert_sessions_started_at ON expert_sessions(started_at);
     `);
+
+    // ==================== FTS5 全文搜索（P0）====================
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
+        id UNINDEXED,
+        expert_name,
+        task_description,
+        result_summary,
+        content='expert_sessions',
+        content_rowid='rowid',
+        tokenize='unicode61'
+      )
+    `);
+
+    // FTS5 同步触发器
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS session_fts_ai AFTER INSERT ON expert_sessions BEGIN
+        INSERT INTO session_fts(rowid, id, expert_name, task_description, result_summary)
+        VALUES (new.rowid, new.id, new.expert_name, new.task_description, COALESCE(new.result_summary, ''));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS session_fts_ad AFTER DELETE ON expert_sessions BEGIN
+        INSERT INTO session_fts(session_fts, rowid, id, expert_name, task_description, result_summary)
+        VALUES ('delete', old.rowid, old.id, old.expert_name, old.task_description, COALESCE(old.result_summary, ''));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS session_fts_au AFTER UPDATE ON expert_sessions BEGIN
+        INSERT INTO session_fts(session_fts, rowid, id, expert_name, task_description, result_summary)
+        VALUES ('delete', old.rowid, old.id, old.expert_name, old.task_description, COALESCE(old.result_summary, ''));
+        INSERT INTO session_fts(rowid, id, expert_name, task_description, result_summary)
+        VALUES (new.rowid, new.id, new.expert_name, new.task_description, COALESCE(new.result_summary, ''));
+      END;
+    `);
+
+    // ==================== 记忆压缩表（P1）====================
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        source TEXT,
+        importance INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        last_accessed_at TEXT DEFAULT (datetime('now')),
+        access_count INTEGER DEFAULT 0
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
+      CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
+      CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
+    `);
   }
 
   // ==================== 飞书会话操作（兼容旧版）====================
@@ -549,6 +603,174 @@ export class SQLiteStorage {
       workDir: record.work_dir || undefined,
       claudeSessionId: record.claude_session_id || undefined,
     };
+  }
+
+  // ==================== FTS5 全文搜索（P0）====================
+
+  /**
+   * 全文搜索会话
+   * @param query 搜索关键词
+   * @param limit 返回数量限制
+   * @returns 匹配的会话列表
+   */
+  searchSessions(query: string, limit: number = 20): ExpertSession[] {
+    const stmt = this.db.prepare(`
+      SELECT s.* FROM expert_sessions s
+      JOIN session_fts fts ON s.id = fts.id
+      WHERE session_fts MATCH ?
+      ORDER BY s.started_at DESC
+      LIMIT ?
+    `);
+    try {
+      const records = stmt.all(query, limit) as ExpertSessionRecord[];
+      return records.map(r => this.recordToSession(r));
+    } catch {
+      // FTS5 查询语法错误时返回空数组
+      return [];
+    }
+  }
+
+  /**
+   * 按专家名搜索会话
+   */
+  searchSessionsByExpert(expertName: string, limit: number = 20): ExpertSession[] {
+    const stmt = this.db.prepare(`
+      SELECT s.* FROM expert_sessions s
+      JOIN session_fts fts ON s.id = fts.id
+      WHERE session_fts MATCH ?
+      ORDER BY s.started_at DESC
+      LIMIT ?
+    `);
+    try {
+      const records = stmt.all(`expert_name:${expertName}`, limit) as ExpertSessionRecord[];
+      return records.map(r => this.recordToSession(r));
+    } catch {
+      return [];
+    }
+  }
+
+  // ==================== 记忆压缩（P1）====================
+
+  /**
+   * 记忆类型
+   */
+  static MEMORY_TYPES = {
+    USER_PREFERENCE: 'user_preference',    // 用户偏好
+    IMPORTANT_DECISION: 'important_decision', // 重要决策
+    UNFINISHED_TASK: 'unfinished_task',    // 未完成任务
+    KEY_OBSERVATION: 'key_observation',    // 关键观察
+  } as const;
+
+  /**
+   * 保存记忆
+   */
+  saveMemory(params: {
+    id: string;
+    type: string;
+    key: string;
+    value: string;
+    source?: string;
+    importance?: number;
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO memories (id, type, key, value, source, importance)
+      VALUES (@id, @type, @key, @value, @source, @importance)
+      ON CONFLICT(id) DO UPDATE SET
+        value = @value,
+        source = COALESCE(@source, source),
+        importance = COALESCE(@importance, importance),
+        last_accessed_at = datetime('now'),
+        access_count = access_count + 1
+    `);
+
+    stmt.run({
+      id: params.id,
+      type: params.type,
+      key: params.key,
+      value: params.value,
+      source: params.source || null,
+      importance: params.importance || 1,
+    });
+  }
+
+  /**
+   * 获取记忆
+   */
+  getMemory(id: string): { type: string; key: string; value: string; source?: string; importance: number } | undefined {
+    const stmt = this.db.prepare(`
+      UPDATE memories SET last_accessed_at = datetime('now'), access_count = access_count + 1
+      WHERE id = ?
+      RETURNING type, key, value, source, importance
+    `);
+    return stmt.get(id) as { type: string; key: string; value: string; source?: string; importance: number } | undefined;
+  }
+
+  /**
+   * 按类型获取记忆
+   */
+  getMemoriesByType(type: string, limit: number = 50): Array<{
+    id: string;
+    key: string;
+    value: string;
+    importance: number;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT id, key, value, importance FROM memories
+      WHERE type = ?
+      ORDER BY importance DESC, last_accessed_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(type, limit) as Array<{
+      id: string;
+      key: string;
+      value: string;
+      importance: number;
+    }>;
+  }
+
+  /**
+   * 获取所有高重要性记忆（用于上下文注入）
+   */
+  getImportantMemories(limit: number = 20): Array<{
+    id: string;
+    type: string;
+    key: string;
+    value: string;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT id, type, key, value FROM memories
+      WHERE importance >= 2
+      ORDER BY importance DESC, last_accessed_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(limit) as Array<{
+      id: string;
+      type: string;
+      key: string;
+      value: string;
+    }>;
+  }
+
+  /**
+   * 删除记忆
+   */
+  deleteMemory(id: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM memories WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * 清理过期记忆
+   */
+  cleanupOldMemories(days: number = 90): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM memories
+      WHERE importance = 1
+        AND datetime(last_accessed_at) < datetime('now', '-' || ? || ' days')
+    `);
+    const result = stmt.run(days);
+    return result.changes;
   }
 
   close(): void {

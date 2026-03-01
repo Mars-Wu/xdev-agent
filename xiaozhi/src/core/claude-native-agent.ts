@@ -9,9 +9,11 @@ import { FeishuClient } from '../feishu/client';
 import { FeishuMessage } from '../feishu/types';
 import { createLogger } from '../utils/logger';
 import { getDefaultModel, PATHS } from '../config';
+import { SQLiteStorage } from '../storage/sqlite';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+import * as crypto from 'crypto';
 
 const logger = createLogger('claude-native-agent');
 
@@ -22,13 +24,6 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 1000; // 1秒
 const DEFAULT_LOCK_TIMEOUT = 30000; // 锁超时时间 30秒
 const DEFAULT_MAX_QUEUE_SIZE = 100; // P1: 消息队列最大容量
-
-// P1 修复：使用统一路径配置
-// 为了保持向后兼容，保留这些常量但改为从 PATHS 获取
-const XIAOZHI_DIR = PATHS.XIAOZHI_HOME;
-const XIAOZHI_WORKSPACE = PATHS.WORKSPACE;
-const LOCKS_DIR = PATHS.LOCKS_DIR;
-const SYSTEM_PROMPT_FILE = PATHS.SYSTEM_PROMPT_FILE;
 
 const DEFAULT_SYSTEM_PROMPT = `# AI管家小智
 
@@ -126,6 +121,9 @@ xiaozhi-worker stop <id> --force # 强制终止
 // 消息来源类型
 export type MessageSource = 'feishu' | 'worker' | 'expert';
 
+// 队列满时的行为
+export type QueueFullBehavior = 'reject' | 'drop_oldest' | 'drop_newest';
+
 // 队列中的消息
 export interface QueuedMessage {
   id: string;
@@ -146,6 +144,23 @@ export interface QueuedMessage {
   // 元数据
   timestamp: Date;
   retries: number;
+}
+
+// 队列操作结果
+export interface EnqueueResult {
+  success: boolean;
+  queueLength: number;
+  droppedMessage?: QueuedMessage;
+  error?: string;
+}
+
+// 队列状态
+export interface QueueStatusInfo {
+  length: number;
+  maxSize: number;
+  isProcessing: boolean;
+  utilizationPercent: number;
+  oldestMessageAge?: number; // 毫秒
 }
 
 // 响应块类型（匹配 Claude CLI --output-format stream-json 的实际格式）
@@ -193,6 +208,9 @@ export interface ClaudeNativeAgentConfig {
   maxRetries?: number;        // 最大重试次数
   retryDelay?: number;        // 重试延迟基数（指数退避）
   autoCompact?: boolean;      // 是否自动压缩（默认 false，通知用户手动处理）
+  // 队列配置
+  maxQueueSize?: number;      // 队列最大容量
+  queueFullBehavior?: QueueFullBehavior; // 队列满时的行为
 }
 
 // 会话健康状态
@@ -220,8 +238,13 @@ export class ClaudeNativeAgent {
   private messageQueue: QueuedMessage[] = [];
   private queueProcessing: boolean = false;
   private maxQueueRetries: number = 3;
-  private maxQueueSize: number = DEFAULT_MAX_QUEUE_SIZE;  // P1: 队列容量限制
+  private maxQueueSize: number;
+  private queueFullBehavior: QueueFullBehavior;
   private defaultChatId: string = '';  // 默认飞书聊天 ID，用于 Worker 通知
+  private queueDropCount: number = 0;  // 队列丢弃计数（监控用）
+
+  // 记忆压缩（P1）
+  private storage: SQLiteStorage;
 
   constructor(config: ClaudeNativeAgentConfig) {
     this.feishuClient = config.feishuClient;
@@ -233,6 +256,98 @@ export class ClaudeNativeAgent {
     this.maxRetries = config.maxRetries || DEFAULT_MAX_RETRIES;
     this.retryDelay = config.retryDelay || DEFAULT_RETRY_DELAY;
     this.autoCompact = config.autoCompact ?? false;
+
+    // 队列配置
+    this.maxQueueSize = config.maxQueueSize || DEFAULT_MAX_QUEUE_SIZE;
+    this.queueFullBehavior = config.queueFullBehavior || 'drop_oldest'; // 默认丢弃最旧消息
+
+    // 初始化存储（用于记忆压缩）
+    this.storage = new SQLiteStorage(PATHS.DB_PATH);
+  }
+
+  /**
+   * 统一的消息入队方法
+   * @returns 入队结果，包含是否成功、当前队列长度、被丢弃的消息（如果有）
+   */
+  private enqueueMessage(msg: QueuedMessage): EnqueueResult {
+    const currentLength = this.messageQueue.length;
+
+    // 队列未满，直接入队
+    if (currentLength < this.maxQueueSize) {
+      this.messageQueue.push(msg);
+      return {
+        success: true,
+        queueLength: this.messageQueue.length,
+      };
+    }
+
+    // 队列已满，根据策略处理
+    let droppedMessage: QueuedMessage | undefined;
+
+    switch (this.queueFullBehavior) {
+      case 'reject':
+        // 拒绝新消息
+        logger.warn(`消息队列已满 (${currentLength}/${this.maxQueueSize})，拒绝新消息: ${msg.id}`);
+        return {
+          success: false,
+          queueLength: currentLength,
+          error: '队列已满，请稍后重试',
+        };
+
+      case 'drop_newest':
+        // 丢弃新消息
+        logger.warn(`消息队列已满 (${currentLength}/${this.maxQueueSize})，丢弃新消息: ${msg.id}`);
+        this.queueDropCount++;
+        return {
+          success: false,
+          queueLength: currentLength,
+          droppedMessage: msg,
+          error: '队列已满，消息被丢弃',
+        };
+
+      case 'drop_oldest':
+      default:
+        // 丢弃最旧的消息
+        droppedMessage = this.messageQueue.shift();
+        this.messageQueue.push(msg);
+        this.queueDropCount++;
+        logger.warn(`消息队列已满 (${currentLength}/${this.maxQueueSize})，丢弃最旧消息: ${droppedMessage?.id}`);
+        return {
+          success: true,
+          queueLength: this.messageQueue.length,
+          droppedMessage,
+        };
+    }
+  }
+
+  /**
+   * 获取队列状态
+   */
+  getQueueStatus(): QueueStatusInfo {
+    const oldestMsg = this.messageQueue[0];
+    const now = Date.now();
+
+    return {
+      length: this.messageQueue.length,
+      maxSize: this.maxQueueSize,
+      isProcessing: this.queueProcessing,
+      utilizationPercent: Math.round((this.messageQueue.length / this.maxQueueSize) * 100),
+      oldestMessageAge: oldestMsg ? now - oldestMsg.timestamp.getTime() : undefined,
+    };
+  }
+
+  /**
+   * 获取队列丢弃计数（监控用）
+   */
+  getQueueDropCount(): number {
+    return this.queueDropCount;
+  }
+
+  /**
+   * 重置队列丢弃计数
+   */
+  resetQueueDropCount(): void {
+    this.queueDropCount = 0;
   }
 
   /**
@@ -244,13 +359,13 @@ export class ClaudeNativeAgent {
     logger.info('Claude Native Agent 启动中...');
 
     // 创建小智配置目录和独立工作目录
-    await fs.mkdir(XIAOZHI_DIR, { recursive: true });
-    await fs.mkdir(XIAOZHI_WORKSPACE, { recursive: true });
+    await fs.mkdir(PATHS.XIAOZHI_HOME, { recursive: true });
+    await fs.mkdir(PATHS.WORKSPACE, { recursive: true });
 
     // 写入系统提示词到工作目录
     await this.writeSystemPrompt();
 
-    logger.info(`工作目录: ${XIAOZHI_WORKSPACE}`);
+    logger.info(`工作目录: ${PATHS.WORKSPACE}`);
     logger.info('Claude Native Agent 已就绪');
   }
 
@@ -307,20 +422,28 @@ export class ClaudeNativeAgent {
       retries: 0,
     };
 
-    // P1: 检查队列容量
-    if (this.messageQueue.length >= this.maxQueueSize) {
-      logger.warn(`消息队列已满 (${this.messageQueue.length}/${this.maxQueueSize})，丢弃最旧的消息`);
-      const dropped = this.messageQueue.shift();
-      if (dropped && dropped.chatId) {
-        await this.feishuClient.sendMessage(dropped.chatId, {
-          content: '消息处理超时，已被丢弃。请重新发送。',
-          type: 'text',
-        }).catch(() => {});
-      }
+    // 使用统一的入队方法
+    const enqueueResult = this.enqueueMessage(queueMsg);
+
+    if (!enqueueResult.success) {
+      // 入队失败，通知用户
+      logger.warn(`飞书消息入队失败: ${queueMsg.id}, 原因: ${enqueueResult.error}`);
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: `❌ ${enqueueResult.error || '系统繁忙，请稍后重试'}`,
+        type: 'text',
+      }).catch(() => {});
+      return;
     }
 
-    this.messageQueue.push(queueMsg);
-    logger.info(`飞书消息入队: ${queueMsg.id}, 队列长度: ${this.messageQueue.length}`);
+    // 如果有被丢弃的消息，通知对应的用户
+    if (enqueueResult.droppedMessage?.chatId) {
+      await this.feishuClient.sendMessage(enqueueResult.droppedMessage.chatId, {
+        content: '⚠️ 消息处理超时，已被丢弃。请重新发送。',
+        type: 'text',
+      }).catch(() => {});
+    }
+
+    logger.info(`飞书消息入队: ${queueMsg.id}, 队列长度: ${enqueueResult.queueLength}`);
 
     // 如果正在处理，通知用户
     if (this.isProcessing) {
@@ -373,14 +496,16 @@ export class ClaudeNativeAgent {
       retries: 0,
     };
 
-    // P1: 检查队列容量
-    if (this.messageQueue.length >= this.maxQueueSize) {
-      logger.warn(`消息队列已满 (${this.messageQueue.length}/${this.maxQueueSize})，丢弃最旧的消息`);
-      this.messageQueue.shift();
+    // 使用统一的入队方法
+    const enqueueResult = this.enqueueMessage(queueMsg);
+
+    if (!enqueueResult.success) {
+      logger.warn(`Worker消息入队失败: ${queueMsg.id}, 原因: ${enqueueResult.error}`);
+      // Worker 消息入队失败，记录日志但不阻塞
+      return;
     }
 
-    this.messageQueue.push(queueMsg);
-    logger.info(`Worker消息入队: ${queueMsg.id} (${data.taskName}), 队列长度: ${this.messageQueue.length}`);
+    logger.info(`Worker消息入队: ${queueMsg.id} (${data.taskName}), 队列长度: ${enqueueResult.queueLength}`);
 
     // 触发队列处理
     this.processQueue();
@@ -415,14 +540,16 @@ export class ClaudeNativeAgent {
       retries: 0,
     };
 
-    // P1: 检查队列容量
-    if (this.messageQueue.length >= this.maxQueueSize) {
-      logger.warn(`消息队列已满 (${this.messageQueue.length}/${this.maxQueueSize})，丢弃最旧的消息`);
-      this.messageQueue.shift();
+    // 使用统一的入队方法
+    const enqueueResult = this.enqueueMessage(queueMsg);
+
+    if (!enqueueResult.success) {
+      logger.warn(`专家消息入队失败: ${queueMsg.id}, 原因: ${enqueueResult.error}`);
+      // 专家消息入队失败，记录日志但不阻塞
+      return;
     }
 
-    this.messageQueue.push(queueMsg);
-    logger.info(`专家消息入队: ${queueMsg.id} (${data.expertName}), 队列长度: ${this.messageQueue.length}`);
+    logger.info(`专家消息入队: ${queueMsg.id} (${data.expertName}), 队列长度: ${enqueueResult.queueLength}`);
 
     // 触发队列处理
     this.processQueue();
@@ -568,16 +695,6 @@ export class ClaudeNativeAgent {
       clearTimeout(safetyTimer);
       this.isProcessing = false;
     }
-  }
-
-  /**
-   * 获取队列状态
-   */
-  getQueueStatus(): { length: number; messages: QueuedMessage[] } {
-    return {
-      length: this.messageQueue.length,
-      messages: [...this.messageQueue],
-    };
   }
 
   /**
@@ -846,11 +963,11 @@ export class ClaudeNativeAgent {
         '--add-dir', '/home/wxy',  // 添加 /home/wxy 目录访问权限
       ];
 
-      logger.info(`调用 Claude (--continue, 工作目录: ${XIAOZHI_WORKSPACE})`);
+      logger.info(`调用 Claude (--continue, 工作目录: ${PATHS.WORKSPACE})`);
       logger.debug(`消息内容: ${userMessage.slice(0, 100)}...`);
 
       const proc = spawn('claude', args, {
-        cwd: XIAOZHI_WORKSPACE,  // 使用独立工作目录
+        cwd: PATHS.WORKSPACE,  // 使用独立工作目录
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -1021,10 +1138,25 @@ export class ClaudeNativeAgent {
         return `会话文件较小 (${this.formatBytes(totalSize)})，无需压缩。`;
       }
 
+      // P1: 压缩前提取记忆
+      try {
+        let sessionContent = '';
+        for (const f of sessionFiles) {
+          const content = await fs.readFile(path.join(projectDir, f), 'utf-8');
+          sessionContent += content + '\n';
+        }
+        await this.compressSession(sessionContent);
+      } catch (error) {
+        logger.warn('记忆提取失败，继续压缩:', error);
+      }
+
       // 归档所有会话
       await this.archiveSession();
       this.compactionCount++;
       this.lastCompactTime = new Date();
+
+      // P1: 重新注入记忆到系统提示词
+      await this.writeSystemPrompt();
 
       return `✅ 会话已重置\n- 原大小: ${this.formatBytes(totalSize)}\n- 历史已归档到 backups/ 目录`;
     } catch {
@@ -1286,7 +1418,7 @@ export class ClaudeNativeAgent {
     // Claude CLI 生成项目哈希的方式：基于工作目录路径
     // 格式: ~/.claude/projects/<project-hash>/
     // 使用简单的方式生成项目哈希（与 Claude CLI 行为一致）
-    const projectHash = this.generateProjectHash(XIAOZHI_WORKSPACE);
+    const projectHash = this.generateProjectHash(PATHS.WORKSPACE);
     return path.join(os.homedir(), '.claude', 'projects', projectHash);
   }
 
@@ -1333,16 +1465,23 @@ export class ClaudeNativeAgent {
    * Claude CLI 会读取当前目录的 CLAUDE.md 作为项目说明
    */
   private async writeSystemPrompt(): Promise<void> {
-    const claudeMdPath = path.join(XIAOZHI_WORKSPACE, 'CLAUDE.md');
+    const claudeMdPath = path.join(PATHS.WORKSPACE, 'CLAUDE.md');
 
     // 检查是否有自定义系统提示词文件
     let systemPrompt = DEFAULT_SYSTEM_PROMPT;
     try {
-      const customPrompt = await fs.readFile(SYSTEM_PROMPT_FILE, 'utf-8');
+      const customPrompt = await fs.readFile(PATHS.SYSTEM_PROMPT_FILE, 'utf-8');
       systemPrompt = customPrompt;
       logger.info('使用自定义系统提示词');
     } catch {
       // 使用默认提示词
+    }
+
+    // P1: 注入记忆
+    const memoryContext = this.injectMemories();
+    if (memoryContext) {
+      systemPrompt += memoryContext;
+      logger.info('已注入长期记忆到系统提示词');
     }
 
     await fs.writeFile(claudeMdPath, systemPrompt);
@@ -1419,7 +1558,7 @@ export class ClaudeNativeAgent {
    * 获取锁文件路径
    */
   private getLockFilePath(lockName: string): string {
-    return path.join(LOCKS_DIR, `${lockName}.lock`);
+    return path.join(PATHS.LOCKS_DIR, `${lockName}.lock`);
   }
 
   /**
@@ -1430,7 +1569,7 @@ export class ClaudeNativeAgent {
    */
   private async acquireLock(lockName: string, timeout: number = DEFAULT_LOCK_TIMEOUT): Promise<() => Promise<void>> {
     const lockFile = this.getLockFilePath(lockName);
-    await fs.mkdir(LOCKS_DIR, { recursive: true });
+    await fs.mkdir(PATHS.LOCKS_DIR, { recursive: true });
 
     const startTime = Date.now();
     const lockId = `${process.pid}-${Date.now()}`;
@@ -1505,5 +1644,181 @@ export class ClaudeNativeAgent {
     } finally {
       await releaseLock();
     }
+  }
+
+  // ==================== 记忆压缩系统（P1）====================
+
+  /**
+   * 压缩会话并提取记忆
+   * 在会话结束或压缩时调用，提取关键信息存入记忆库
+   */
+  private async compressSession(sessionContent: string): Promise<void> {
+    try {
+      const memories: Array<{
+        type: string;
+        key: string;
+        value: string;
+        importance: number;
+      }> = [];
+
+      // 1. 提取用户偏好（关键词：喜欢、偏好、习惯、默认等）
+      const preferencePatterns = [
+        /(?:我|用户)\s*(?:喜欢|偏好|习惯|想要|默认)(.+?)(?:[。，\n]|$)/g,
+        /(?:请|麻烦)(?:以后|之后|之后)(.+?)(?:[。，\n]|$)/g,
+      ];
+
+      for (const pattern of preferencePatterns) {
+        let match;
+        while ((match = pattern.exec(sessionContent)) !== null) {
+          const value = match[1].trim();
+          if (value.length > 5 && value.length < 200) {
+            memories.push({
+              type: SQLiteStorage.MEMORY_TYPES.USER_PREFERENCE,
+              key: `pref_${crypto.randomBytes(4).toString('hex')}`,
+              value,
+              importance: 2,
+            });
+          }
+        }
+      }
+
+      // 2. 提取重要决策（关键词：决定、确认、选择等）
+      const decisionPatterns = [
+        /(?:决定|确认|选择|最终)(.+?)(?:[。，\n]|$)/g,
+        /(?:方案|策略)(\d+|[A-Z])(?:.*?)(?:是|为)(.+?)(?:[。，\n]|$)/g,
+      ];
+
+      for (const pattern of decisionPatterns) {
+        let match;
+        while ((match = pattern.exec(sessionContent)) !== null) {
+          const value = match[0].trim();
+          if (value.length > 10 && value.length < 300) {
+            memories.push({
+              type: SQLiteStorage.MEMORY_TYPES.IMPORTANT_DECISION,
+              key: `dec_${crypto.randomBytes(4).toString('hex')}`,
+              value,
+              importance: 3,
+            });
+          }
+        }
+      }
+
+      // 3. 提取未完成任务（关键词：待办、需要、还没等）
+      const taskPatterns = [
+        /(?:待办|需要|还要|还没|后续)(.+?)(?:[。，\n]|$)/g,
+        /(?:TODO|FIXME|XXX)[:：]\s*(.+?)(?:[。，\n]|$)/gi,
+      ];
+
+      for (const pattern of taskPatterns) {
+        let match;
+        while ((match = pattern.exec(sessionContent)) !== null) {
+          const value = match[1]?.trim() || match[0].trim();
+          if (value.length > 5 && value.length < 200) {
+            memories.push({
+              type: SQLiteStorage.MEMORY_TYPES.UNFINISHED_TASK,
+              key: `task_${crypto.randomBytes(4).toString('hex')}`,
+              value,
+              importance: 2,
+            });
+          }
+        }
+      }
+
+      // 4. 保存记忆（去重）
+      const existingKeys = new Set<string>();
+      for (const memory of memories) {
+        // 简单去重：检查是否已存在相似记忆
+        const hash = crypto.createHash('md5').update(memory.value).digest('hex').substring(0, 8);
+        const uniqueKey = `${memory.type}_${hash}`;
+
+        if (!existingKeys.has(uniqueKey)) {
+          existingKeys.add(uniqueKey);
+          this.storage.saveMemory({
+            id: uniqueKey,
+            type: memory.type,
+            key: memory.key,
+            value: memory.value,
+            source: 'xiaozhi_session',
+            importance: memory.importance,
+          });
+        }
+      }
+
+      if (memories.length > 0) {
+        logger.info(`记忆压缩完成: 提取 ${memories.length} 条记忆`);
+      }
+    } catch (error) {
+      logger.error('记忆压缩失败:', error);
+    }
+  }
+
+  /**
+   * 注入记忆到上下文
+   * 在新会话开始时调用，将重要记忆注入系统提示词
+   */
+  private injectMemories(): string {
+    try {
+      const importantMemories = this.storage.getImportantMemories(15);
+
+      if (importantMemories.length === 0) {
+        return '';
+      }
+
+      // 按类型分组
+      const grouped: Record<string, string[]> = {};
+      for (const memory of importantMemories) {
+        if (!grouped[memory.type]) {
+          grouped[memory.type] = [];
+        }
+        grouped[memory.type].push(`- ${memory.value}`);
+      }
+
+      // 构建记忆上下文
+      const sections: string[] = ['\n## 长期记忆（来自历史会话）'];
+
+      const typeNames: Record<string, string> = {
+        user_preference: '用户偏好',
+        important_decision: '重要决策',
+        unfinished_task: '未完成任务',
+        key_observation: '关键观察',
+      };
+
+      for (const [type, items] of Object.entries(grouped)) {
+        const typeName = typeNames[type] || type;
+        sections.push(`\n### ${typeName}`);
+        sections.push(items.join('\n'));
+      }
+
+      return sections.join('\n');
+    } catch (error) {
+      logger.error('注入记忆失败:', error);
+      return '';
+    }
+  }
+
+  /**
+   * 获取记忆统计
+   */
+  getMemoryStats(): { total: number; byType: Record<string, number> } {
+    try {
+      const stats = { total: 0, byType: {} as Record<string, number> };
+
+      for (const type of Object.values(SQLiteStorage.MEMORY_TYPES)) {
+        const memories = this.storage.getMemoriesByType(type);
+        stats.byType[type] = memories.length;
+        stats.total += memories.length;
+      }
+
+      return stats;
+    } catch {
+      return { total: 0, byType: {} };
+    }
+  }
+
+  /**
+   * 清理过期记忆
+   */
+  cleanupMemories(days: number = 90): number {
+    return this.storage.cleanupOldMemories(days);
   }
 }

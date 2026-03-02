@@ -148,7 +148,20 @@ xiaozhi-worker stop <id> --force # 强制终止
 如果操作预计超过 1 分钟：
 1. 先告知用户开始执行
 2. 执行过程中定期发送进度更新
-3. 完成后发送最终结果`;
+3. 完成后发送最终结果
+
+### 6. 任务超时转交
+当任务执行超时（超过 2 分钟）时，系统会自动询问用户是否需要专家继续。
+
+当用户回复"继续"时：
+1. 调用合适的专家继续完成任务
+2. 告知用户已转交给哪个专家
+3. 专家完成后会自动汇报结果
+
+示例：
+用户: "继续"
+你: "好的，我调用 coder 专家继续完成这个任务..."
+    [调用专家]`;
 
 // ==================== 消息队列类型 ====================
 
@@ -1078,10 +1091,13 @@ export class ClaudeNativeAgent {
           await this.killProcessTree(proc);
 
           if (responseText) {
-            logger.warn('超时但有部分响应，返回部分内容');
-            resolve(responseText.trim());
+            logger.warn('超时但有部分响应，添加专家转交提示');
+            // 在部分响应后添加询问
+            const askExpert = `\n\n---\n[任务超时] 当前任务执行超过 ${Math.round(this.timeout / 60000)} 分钟，尚未完成。\n\n如果需要专家继续完成，请回复：继续\n或指定专家：调用 coder 继续`;
+            resolve(responseText.trim() + askExpert);
           } else {
-            reject(new Error('Timeout'));
+            // 无响应时也提示可以调用专家
+            resolve(`[任务超时] 当前任务执行超过 ${Math.round(this.timeout / 60000)} 分钟，未能完成。\n\n如果需要专家继续，请回复：继续\n或指定专家：调用 coder 继续`);
           }
         }
       }, this.timeout);

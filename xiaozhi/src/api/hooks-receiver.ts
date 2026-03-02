@@ -2,6 +2,8 @@
 // HTTP API 服务器 - 专家管理、会话管理、回调处理、生命周期钩子
 
 import express, { Request, Response, NextFunction } from 'express';
+import swaggerJsdoc from 'swagger-jsdoc';
+import swaggerUi from 'swagger-ui-express';
 import { ClaudeNativeAgent } from '../core/claude-native-agent';
 import { ExpertManager } from '../expert/manager';
 import { createLogger } from '../utils/logger';
@@ -12,6 +14,77 @@ import {
 } from '../expert/types';
 
 const logger = createLogger('hooks-receiver');
+
+// ==================== OpenAPI 文档配置 ====================
+
+const swaggerOptions: swaggerJsdoc.Options = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'AI管家小智 API',
+      version: '3.1.0',
+      description: '基于 Claude CLI 的智能管家系统 API 文档',
+      contact: {
+        name: '小智项目',
+      },
+    },
+    servers: [
+      {
+        url: 'http://localhost:8081',
+        description: '本地开发服务器',
+      },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'x-xiaozhi-token',
+        },
+      },
+      schemas: {
+        Expert: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            description: { type: 'string' },
+            specialties: { type: 'array', items: { type: 'string' } },
+            type: { type: 'string', enum: ['predefined', 'dynamic'] },
+            stats: {
+              type: 'object',
+              properties: {
+                totalCalls: { type: 'integer' },
+                successCount: { type: 'integer' },
+                lastUsedAt: { type: 'string', format: 'date-time' },
+              },
+            },
+          },
+        },
+        Session: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            expertName: { type: 'string' },
+            status: { type: 'string', enum: ['running', 'completed', 'failed', 'terminated'] },
+            task: { type: 'object' },
+            execution: { type: 'object' },
+            result: { type: 'object' },
+          },
+        },
+        Error: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+  apis: ['./src/api/*.ts'],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 // ==================== 生命周期钩子（P2）====================
 
@@ -132,6 +205,13 @@ export class HooksReceiver {
 
   private setupRoutes(): void {
     this.app.use(express.json());
+
+    // ==================== API 文档 ====================
+    this.app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+    this.app.get('/api-docs.json', (_req: Request, res: Response) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(swaggerSpec);
+    });
 
     // ==================== 健康检查 ====================
     this.app.get('/health', this.handleHealthCheck.bind(this));
@@ -261,6 +341,9 @@ export class HooksReceiver {
       checks.experts = { status: 'unavailable' };
     }
 
+    // Claude CLI 状态（异步检测，使用缓存）
+    checks.claude_cli = this.checkClaudeCLI();
+
     // 计算整体状态
     const statuses = Object.values(checks).map(c => c.status);
     const overallStatus = statuses.includes('critical')
@@ -286,7 +369,31 @@ export class HooksReceiver {
   }
 
   /**
-   * GET /api/experts - 获取专家列表
+   * @openapi
+   * /api/experts:
+   *   get:
+   *     summary: 获取专家列表
+   *     description: 返回所有可用专家的配置信息
+   *     tags:
+   *       - 专家管理
+   *     responses:
+   *       200:
+   *         description: 成功获取专家列表
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 experts:
+   *                   type: array
+   *                   items:
+   *                     $ref: '#/components/schemas/Expert'
+   *       503:
+   *         description: 服务不可用
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Error'
    */
   private handleListExperts(req: Request, res: Response): void {
     if (!this.expertManager) {
@@ -590,6 +697,53 @@ export class HooksReceiver {
     this.server = this.app.listen(port, () => {
       logger.info(`HTTP receiver listening on port ${port}`);
     });
+  }
+
+  // ==================== Claude CLI 健康检查 ====================
+
+  private claudeCLICache: { status: string; version?: string; timestamp: number } | null = null;
+  private readonly CLI_CACHE_TTL = 60000; // 1 分钟缓存
+
+  /**
+   * 检查 Claude CLI 可用性
+   */
+  private checkClaudeCLI(): { status: string; details?: Record<string, unknown> } {
+    // 使用缓存
+    if (this.claudeCLICache && Date.now() - this.claudeCLICache.timestamp < this.CLI_CACHE_TTL) {
+      return {
+        status: this.claudeCLICache.status,
+        details: { version: this.claudeCLICache.version, cached: true },
+      };
+    }
+
+    try {
+      const { execSync } = require('child_process');
+      const version = execSync('claude --version 2>/dev/null', {
+        encoding: 'utf-8',
+        timeout: 5000,
+      }).trim();
+
+      this.claudeCLICache = {
+        status: 'ok',
+        version: version || 'unknown',
+        timestamp: Date.now(),
+      };
+
+      return {
+        status: 'ok',
+        details: { version: this.claudeCLICache.version },
+      };
+    } catch (error) {
+      this.claudeCLICache = {
+        status: 'unavailable',
+        timestamp: Date.now(),
+      };
+
+      return {
+        status: 'unavailable',
+        details: { error: 'Claude CLI not found or not accessible' },
+      };
+    }
   }
 
   close(): void {

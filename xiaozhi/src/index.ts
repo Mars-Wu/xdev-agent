@@ -16,7 +16,48 @@ import * as os from 'os';
 
 const logger = createLogger('main');
 
+/**
+ * 验证必需的环境变量
+ */
+function validateConfig(): void {
+  const requiredEnvVars = [
+    { name: 'FEISHU_APP_ID', description: '飞书应用 ID' },
+    { name: 'FEISHU_APP_SECRET', description: '飞书应用密钥' },
+  ];
+
+  const missing: string[] = [];
+
+  for (const { name, description } of requiredEnvVars) {
+    if (!process.env[name]) {
+      missing.push(`${name} (${description})`);
+    }
+  }
+
+  if (missing.length > 0) {
+    logger.error('==========================================');
+    logger.error('配置验证失败: 缺少必需的环境变量');
+    logger.error('==========================================');
+    for (const item of missing) {
+      logger.error(`  - ${item}`);
+    }
+    logger.error('');
+    logger.error('请在 .env 文件或环境变量中设置这些值');
+    logger.error('==========================================');
+    process.exit(1);
+  }
+
+  // 验证格式
+  if (process.env.FEISHU_APP_ID && !process.env.FEISHU_APP_ID.startsWith('cli_')) {
+    logger.warn('FEISHU_APP_ID 格式可能不正确（通常以 cli_ 开头）');
+  }
+
+  logger.info('配置验证通过');
+}
+
 async function main() {
+  // 配置验证
+  validateConfig();
+
   logger.info('AI管家小智启动中...');
   logger.info('==========================================');
   logger.info('架构: 消息队列 + 统一专家系统 + Claude CLI');

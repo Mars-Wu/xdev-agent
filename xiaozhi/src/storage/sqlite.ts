@@ -4,6 +4,7 @@
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createLogger } from '../utils/logger';
 import {
   ExpertConfig,
   ExpertSession,
@@ -47,6 +48,8 @@ export interface WorkerRecord {
   startedAt: string | null;
   completedAt: string | null;
 }
+
+const logger = createLogger('storage');
 
 export class SQLiteStorage {
   private db: Database.Database;
@@ -624,8 +627,9 @@ export class SQLiteStorage {
     try {
       const records = stmt.all(query, limit) as ExpertSessionRecord[];
       return records.map(r => this.recordToSession(r));
-    } catch {
+    } catch (error) {
       // FTS5 查询语法错误时返回空数组
+      logger.debug('FTS5 搜索查询失败:', error);
       return [];
     }
   }
@@ -644,7 +648,8 @@ export class SQLiteStorage {
     try {
       const records = stmt.all(`expert_name:${expertName}`, limit) as ExpertSessionRecord[];
       return records.map(r => this.recordToSession(r));
-    } catch {
+    } catch (error) {
+      logger.debug('FTS5 专家搜索失败:', error);
       return [];
     }
   }

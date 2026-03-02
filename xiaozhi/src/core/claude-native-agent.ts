@@ -1649,103 +1649,176 @@ export class ClaudeNativeAgent {
   // ==================== 记忆压缩系统（P1）====================
 
   /**
+   * 记忆提取规则
+   */
+  private static MEMORY_RULES = {
+    user_preference: {
+      patterns: [
+        { regex: /(?:我|用户)\s*(?:喜欢|偏好|习惯|想要|默认)(.+?)(?:[。，\n]|$)/g, weight: 1.0 },
+        { regex: /(?:请|麻烦)(?:以后|之后|之后)(.+?)(?:[。，\n]|$)/g, weight: 0.8 },
+        { regex: /(?:记住|记得)(.+?)(?:[。，\n]|$)/g, weight: 0.9 },
+      ],
+      minLength: 5,
+      maxLength: 200,
+      baseImportance: 2,
+    },
+    important_decision: {
+      patterns: [
+        { regex: /(?:决定|确认|选择|最终)(.+?)(?:[。，\n]|$)/g, weight: 1.0 },
+        { regex: /(?:方案|策略)(\d+|[A-Z])(?:.*?)(?:是|为)(.+?)(?:[。，\n]|$)/g, weight: 0.9 },
+        { regex: /(?:同意|批准|通过)(.+?)(?:[。，\n]|$)/g, weight: 0.8 },
+      ],
+      minLength: 10,
+      maxLength: 300,
+      baseImportance: 3,
+    },
+    unfinished_task: {
+      patterns: [
+        { regex: /(?:待办|需要|还要|还没|后续)(.+?)(?:[。，\n]|$)/g, weight: 0.9 },
+        { regex: /(?:TODO|FIXME|XXX)[:：]\s*(.+?)(?:[。，\n]|$)/gi, weight: 1.0 },
+        { regex: /(?:下次|之后|以后)(?:要|需要|记得)(.+?)(?:[。，\n]|$)/g, weight: 0.7 },
+      ],
+      minLength: 5,
+      maxLength: 200,
+      baseImportance: 2,
+    },
+    key_observation: {
+      patterns: [
+        { regex: /(?:发现|注意|观察到)(.+?)(?:[。，\n]|$)/g, weight: 0.8 },
+        { regex: /(?:问题|错误|异常)[:：]\s*(.+?)(?:[。，\n]|$)/g, weight: 0.9 },
+      ],
+      minLength: 10,
+      maxLength: 250,
+      baseImportance: 2,
+    },
+  };
+
+  /**
+   * 计算记忆置信度
+   */
+  private calculateConfidence(value: string, weight: number, context: string): number {
+    let confidence = weight;
+
+    // 长度适中加分
+    if (value.length >= 20 && value.length <= 100) {
+      confidence += 0.1;
+    }
+
+    // 包含关键信息加分
+    if (/[a-zA-Z0-9]/.test(value)) {
+      confidence += 0.05; // 包含数字或英文
+    }
+
+    // 上下文相关性（简单检查）
+    if (context.includes('小智') || context.includes('系统')) {
+      confidence += 0.05;
+    }
+
+    return Math.min(confidence, 1.0);
+  }
+
+  /**
+   * 检查两条记忆是否相似
+   */
+  private isSimilarMemory(a: string, b: string): boolean {
+    // 完全相同
+    if (a === b) return true;
+
+    // 包含关系
+    if (a.includes(b) || b.includes(a)) return true;
+
+    // 简单的词汇重叠检查
+    const wordsA = new Set(a.split(/\s+/));
+    const wordsB = new Set(b.split(/\s+/));
+    const intersection = new Set([...wordsA].filter(x => wordsB.has(x)));
+    const union = new Set([...wordsA, ...wordsB]);
+
+    // Jaccard 相似度 > 0.5 视为相似
+    if (union.size > 0 && intersection.size / union.size > 0.5) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * 压缩会话并提取记忆
    * 在会话结束或压缩时调用，提取关键信息存入记忆库
    */
   private async compressSession(sessionContent: string): Promise<void> {
     try {
-      const memories: Array<{
+      const extractedMemories: Array<{
         type: string;
-        key: string;
         value: string;
+        confidence: number;
         importance: number;
       }> = [];
 
-      // 1. 提取用户偏好（关键词：喜欢、偏好、习惯、默认等）
-      const preferencePatterns = [
-        /(?:我|用户)\s*(?:喜欢|偏好|习惯|想要|默认)(.+?)(?:[。，\n]|$)/g,
-        /(?:请|麻烦)(?:以后|之后|之后)(.+?)(?:[。，\n]|$)/g,
-      ];
+      // 按类型提取记忆
+      for (const [type, rules] of Object.entries(ClaudeNativeAgent.MEMORY_RULES)) {
+        for (const { regex, weight } of rules.patterns) {
+          let match;
+          const globalRegex = new RegExp(regex.source, regex.flags);
 
-      for (const pattern of preferencePatterns) {
-        let match;
-        while ((match = pattern.exec(sessionContent)) !== null) {
-          const value = match[1].trim();
-          if (value.length > 5 && value.length < 200) {
-            memories.push({
-              type: SQLiteStorage.MEMORY_TYPES.USER_PREFERENCE,
-              key: `pref_${crypto.randomBytes(4).toString('hex')}`,
-              value,
-              importance: 2,
-            });
+          while ((match = globalRegex.exec(sessionContent)) !== null) {
+            const value = (match[1] || match[0]).trim();
+
+            // 验证长度
+            if (value.length < rules.minLength || value.length > rules.maxLength) {
+              continue;
+            }
+
+            // 计算置信度
+            const confidence = this.calculateConfidence(value, weight, sessionContent);
+
+            // 只保留置信度 > 0.5 的记忆
+            if (confidence > 0.5) {
+              extractedMemories.push({
+                type,
+                value,
+                confidence,
+                importance: Math.round(rules.baseImportance * confidence),
+              });
+            }
           }
         }
       }
 
-      // 2. 提取重要决策（关键词：决定、确认、选择等）
-      const decisionPatterns = [
-        /(?:决定|确认|选择|最终)(.+?)(?:[。，\n]|$)/g,
-        /(?:方案|策略)(\d+|[A-Z])(?:.*?)(?:是|为)(.+?)(?:[。，\n]|$)/g,
-      ];
+      // 去重：移除相似的记忆
+      const uniqueMemories: typeof extractedMemories = [];
+      for (const memory of extractedMemories) {
+        const isDuplicate = uniqueMemories.some(
+          existing =>
+            existing.type === memory.type &&
+            this.isSimilarMemory(existing.value, memory.value)
+        );
 
-      for (const pattern of decisionPatterns) {
-        let match;
-        while ((match = pattern.exec(sessionContent)) !== null) {
-          const value = match[0].trim();
-          if (value.length > 10 && value.length < 300) {
-            memories.push({
-              type: SQLiteStorage.MEMORY_TYPES.IMPORTANT_DECISION,
-              key: `dec_${crypto.randomBytes(4).toString('hex')}`,
-              value,
-              importance: 3,
-            });
-          }
+        if (!isDuplicate) {
+          uniqueMemories.push(memory);
         }
       }
 
-      // 3. 提取未完成任务（关键词：待办、需要、还没等）
-      const taskPatterns = [
-        /(?:待办|需要|还要|还没|后续)(.+?)(?:[。，\n]|$)/g,
-        /(?:TODO|FIXME|XXX)[:：]\s*(.+?)(?:[。，\n]|$)/gi,
-      ];
+      // 按置信度排序，只保留前 20 条
+      uniqueMemories.sort((a, b) => b.confidence - a.confidence);
+      const topMemories = uniqueMemories.slice(0, 20);
 
-      for (const pattern of taskPatterns) {
-        let match;
-        while ((match = pattern.exec(sessionContent)) !== null) {
-          const value = match[1]?.trim() || match[0].trim();
-          if (value.length > 5 && value.length < 200) {
-            memories.push({
-              type: SQLiteStorage.MEMORY_TYPES.UNFINISHED_TASK,
-              key: `task_${crypto.randomBytes(4).toString('hex')}`,
-              value,
-              importance: 2,
-            });
-          }
-        }
-      }
-
-      // 4. 保存记忆（去重）
-      const existingKeys = new Set<string>();
-      for (const memory of memories) {
-        // 简单去重：检查是否已存在相似记忆
+      // 保存记忆
+      for (const memory of topMemories) {
         const hash = crypto.createHash('md5').update(memory.value).digest('hex').substring(0, 8);
-        const uniqueKey = `${memory.type}_${hash}`;
+        const id = `${memory.type}_${hash}`;
 
-        if (!existingKeys.has(uniqueKey)) {
-          existingKeys.add(uniqueKey);
-          this.storage.saveMemory({
-            id: uniqueKey,
-            type: memory.type,
-            key: memory.key,
-            value: memory.value,
-            source: 'xiaozhi_session',
-            importance: memory.importance,
-          });
-        }
+        this.storage.saveMemory({
+          id,
+          type: memory.type,
+          key: `${memory.type}_${crypto.randomBytes(4).toString('hex')}`,
+          value: memory.value,
+          source: 'xiaozhi_session',
+          importance: memory.importance,
+        });
       }
 
-      if (memories.length > 0) {
-        logger.info(`记忆压缩完成: 提取 ${memories.length} 条记忆`);
+      if (topMemories.length > 0) {
+        logger.info(`记忆压缩完成: 提取 ${topMemories.length} 条记忆 (置信度平均: ${(topMemories.reduce((a, b) => a + b.confidence, 0) / topMemories.length).toFixed(2)})`);
       }
     } catch (error) {
       logger.error('记忆压缩失败:', error);

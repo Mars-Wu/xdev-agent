@@ -168,7 +168,8 @@ class ConfigManager {
       }
 
       return config;
-    } catch {
+    } catch (error) {
+      logger.debug('读取 ~/.claude/settings.json 失败:', error);
       return {};
     }
   }
@@ -356,7 +357,8 @@ class ConfigManager {
       }
 
       return env;
-    } catch {
+    } catch (error) {
+      logger.debug('读取环境变量配置失败:', error);
       return {};
     }
   }

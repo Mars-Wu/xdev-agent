@@ -4,6 +4,9 @@
 
 import * as lark from '@larksuiteoapi/node-sdk';
 import { FeishuConfig, FeishuMessage, FeishuReply, MessageCard } from './types';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('feishu');
 
 // 重连配置
 const RECONNECT_CONFIG = {
@@ -73,7 +76,7 @@ export class FeishuClient {
             // 消息去重
             const messageId = data.message.message_id;
             if (this.processedMessages.has(messageId)) {
-              console.log('[DEBUG] Duplicate message ignored:', messageId);
+              logger.debug('重复消息已忽略:', messageId);
               return;
             }
 
@@ -111,9 +114,9 @@ export class FeishuClient {
       this.currentDelay = RECONNECT_CONFIG.initialDelay;
       this.isReconnecting = false;
 
-      console.log('[Feishu] WebSocket client started');
+      logger.info('WebSocket 客户端已启动');
     } catch (error) {
-      console.error('[Feishu] 连接失败:', error);
+      logger.error('连接失败:', error);
       this.handleDisconnect();
     }
   }
@@ -127,16 +130,16 @@ export class FeishuClient {
     this.isReconnecting = true;
 
     if (this.reconnectAttempts >= RECONNECT_CONFIG.maxRetries) {
-      console.error(`[Feishu] 已达到最大重连次数 (${RECONNECT_CONFIG.maxRetries})，停止重连`);
+      logger.error(`已达到最大重连次数 (${RECONNECT_CONFIG.maxRetries})，停止重连`);
       this.isReconnecting = false;
       return;
     }
 
     this.reconnectAttempts++;
-    console.log(`[Feishu] 将在 ${this.currentDelay}ms 后进行第 ${this.reconnectAttempts} 次重连...`);
+    logger.info(`将在 ${this.currentDelay}ms 后进行第 ${this.reconnectAttempts} 次重连...`);
 
     this.reconnectTimer = setTimeout(async () => {
-      console.log(`[Feishu] 开始第 ${this.reconnectAttempts} 次重连...`);
+      logger.info(`开始第 ${this.reconnectAttempts} 次重连...`);
 
       // P1 修复：在创建新实例前显式关闭旧实例，避免资源泄漏
       if (this.wsClient) {
@@ -144,9 +147,9 @@ export class FeishuClient {
           // 尝试关闭旧的 WSClient（如果有关闭方法的话）
           // lark WSClient 可能没有显式的 close 方法，这里设置为 undefined 让 GC 回收
           this.wsClient = undefined;
-          console.log('[Feishu] 旧 WSClient 实例已释放');
+          logger.debug('旧 WSClient 实例已释放');
         } catch (error) {
-          console.warn('[Feishu] 关闭旧 WSClient 时出错:', error);
+          logger.warn('关闭旧 WSClient 时出错:', error);
         }
       }
 
@@ -156,7 +159,7 @@ export class FeishuClient {
       try {
         await this.connectWithRetry();
       } catch (error) {
-        console.error(`[Feishu] 第 ${this.reconnectAttempts} 次重连失败:`, error);
+        logger.error(`第 ${this.reconnectAttempts} 次重连失败:`, error);
       }
 
       // 指数退避
@@ -176,7 +179,7 @@ export class FeishuClient {
       this.reconnectTimer = undefined;
     }
 
-    console.log('[Feishu] WebSocket client stopping');
+    logger.info('WebSocket 客户端正在停止');
   }
 
   async sendMessage(chatId: string, reply: FeishuReply): Promise<void> {
@@ -190,7 +193,7 @@ export class FeishuClient {
         },
       });
     } catch (error) {
-      console.error('Failed to send message:', error);
+      logger.error('发送消息失败:', error);
       throw error;
     }
   }
@@ -206,7 +209,7 @@ export class FeishuClient {
         },
       });
     } catch (error) {
-      console.error('Failed to send card:', error);
+      logger.error('发送卡片失败:', error);
       throw error;
     }
   }
@@ -223,7 +226,7 @@ export class FeishuClient {
         },
       });
     } catch (error) {
-      console.error('Failed to reply to message:', error);
+      logger.error('回复消息失败:', error);
       throw error;
     }
   }

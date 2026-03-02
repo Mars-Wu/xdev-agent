@@ -60,7 +60,8 @@ export class MemoryMonitor {
           'ps aux --sort=-%mem | head -6 | tail -5'
         );
         topProcesses = psStdout.trim();
-      } catch {
+      } catch (error) {
+        logger.debug('获取进程信息失败:', error);
         topProcesses = '无法获取进程信息';
       }
 

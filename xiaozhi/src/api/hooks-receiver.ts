@@ -12,6 +12,8 @@ import {
   CreateExpertParams,
   ExpertCallParams,
 } from '../expert/types';
+import { CronManager } from '../cron/manager';
+import { CreateCronTaskParams } from '../cron/types';
 
 const logger = createLogger('hooks-receiver');
 
@@ -125,6 +127,7 @@ export class HooksReceiver {
   private app: express.Application;
   private agent?: ClaudeNativeAgent;
   private expertManager?: ExpertManager;
+  private cronManager?: CronManager;
   private server?: ReturnType<express.Application['listen']>;
   private apiToken: string | null = null;
 
@@ -203,6 +206,14 @@ export class HooksReceiver {
     logger.info('HooksReceiver 已关联 ExpertManager');
   }
 
+  /**
+   * 设置 Cron 管理器
+   */
+  setCronManager(manager: CronManager): void {
+    this.cronManager = manager;
+    logger.info('HooksReceiver 已关联 CronManager');
+  }
+
   private setupRoutes(): void {
     this.app.use(express.json());
 
@@ -244,6 +255,16 @@ export class HooksReceiver {
     this.app.post('/api/hooks/trigger', this.requireAuthToken.bind(this), this.handleTriggerHook.bind(this));
     this.app.get('/api/hooks', this.handleListHooks.bind(this));
     this.app.post('/api/hooks/:type/register', this.requireAuthToken.bind(this), this.handleRegisterHook.bind(this));
+
+    // ==================== Cron 定时任务 API ====================
+    this.app.get('/api/cron/tasks', this.handleListCronTasks.bind(this));
+    this.app.post('/api/cron/tasks', this.requireAuthToken.bind(this), this.handleCreateCronTask.bind(this));
+    this.app.get('/api/cron/tasks/:id', this.handleGetCronTask.bind(this));
+    this.app.delete('/api/cron/tasks/:id', this.requireAuthToken.bind(this), this.handleDeleteCronTask.bind(this));
+    this.app.post('/api/cron/tasks/:id/enable', this.requireAuthToken.bind(this), this.handleEnableCronTask.bind(this));
+    this.app.post('/api/cron/tasks/:id/disable', this.requireAuthToken.bind(this), this.handleDisableCronTask.bind(this));
+    this.app.post('/api/cron/tasks/:id/trigger', this.requireAuthToken.bind(this), this.handleTriggerCronTask.bind(this));
+    this.app.get('/api/cron/status', this.handleGetCronStatus.bind(this));
 
     // ==================== 测试 API ====================
     this.app.post('/test/message', this.requireAuthToken.bind(this), this.handleTestMessage.bind(this));
@@ -874,5 +895,180 @@ export class HooksReceiver {
   setHooksEnabled(enabled: boolean): void {
     this.hookConfig.enabled = enabled;
     logger.info(`[Hook] ${enabled ? '启用' : '禁用'}钩子系统`);
+  }
+
+  // ==================== Cron 定时任务 API 实现 ====================
+
+  /**
+   * GET /api/cron/tasks - 列出所有 Cron 任务
+   */
+  private handleListCronTasks(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { chatId } = req.query;
+    const tasks = chatId
+      ? this.cronManager.getTasksByChatId(chatId as string)
+      : this.cronManager.getAllTasks();
+
+    res.json({ tasks, count: tasks.length });
+  }
+
+  /**
+   * POST /api/cron/tasks - 创建 Cron 任务
+   */
+  private handleCreateCronTask(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { description, cronExpr, taskContent, chatId, silent } = req.body;
+
+    if (!description || !cronExpr || !taskContent || !chatId) {
+      res.status(400).json({
+        error: 'Missing required fields: description, cronExpr, taskContent, chatId'
+      });
+      return;
+    }
+
+    try {
+      const params: CreateCronTaskParams = {
+        description,
+        cronExpr,
+        taskContent,
+        chatId,
+        silent: silent === true,
+      };
+
+      const task = this.cronManager.createTask(params);
+      res.status(201).json({ status: 'ok', task });
+    } catch (error) {
+      logger.error('[Cron] 创建任务失败:', error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.status(400).json({ error: message });
+    }
+  }
+
+  /**
+   * GET /api/cron/tasks/:id - 获取单个任务
+   */
+  private handleGetCronTask(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { id } = req.params;
+    const task = this.cronManager.getTask(id);
+
+    if (!task) {
+      res.status(404).json({ error: `任务 ${id} 不存在` });
+      return;
+    }
+
+    res.json({ task });
+  }
+
+  /**
+   * DELETE /api/cron/tasks/:id - 删除任务
+   */
+  private handleDeleteCronTask(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { id } = req.params;
+    const deleted = this.cronManager.deleteTask(id);
+
+    if (!deleted) {
+      res.status(404).json({ error: `任务 ${id} 不存在` });
+      return;
+    }
+
+    res.json({ status: 'ok', message: `任务 ${id} 已删除` });
+  }
+
+  /**
+   * POST /api/cron/tasks/:id/enable - 启用任务
+   */
+  private handleEnableCronTask(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { id } = req.params;
+    const enabled = this.cronManager.enableTask(id);
+
+    if (!enabled) {
+      res.status(404).json({ error: `任务 ${id} 不存在` });
+      return;
+    }
+
+    res.json({ status: 'ok', message: `任务 ${id} 已启用` });
+  }
+
+  /**
+   * POST /api/cron/tasks/:id/disable - 禁用任务
+   */
+  private handleDisableCronTask(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { id } = req.params;
+    const disabled = this.cronManager.disableTask(id);
+
+    if (!disabled) {
+      res.status(404).json({ error: `任务 ${id} 不存在` });
+      return;
+    }
+
+    res.json({ status: 'ok', message: `任务 ${id} 已禁用` });
+  }
+
+  /**
+   * POST /api/cron/tasks/:id/trigger - 手动触发任务
+   */
+  private async handleTriggerCronTask(req: Request, res: Response): Promise<void> {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const { id } = req.params;
+
+    try {
+      const triggered = await this.cronManager.triggerTask(id);
+
+      if (!triggered) {
+        res.status(404).json({ error: `任务 ${id} 不存在` });
+        return;
+      }
+
+      res.json({ status: 'ok', message: `任务 ${id} 已触发` });
+    } catch (error) {
+      logger.error('[Cron] 触发任务失败:', error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  }
+
+  /**
+   * GET /api/cron/status - 获取 Cron 系统状态
+   */
+  private handleGetCronStatus(req: Request, res: Response): void {
+    if (!this.cronManager) {
+      res.status(503).json({ error: 'CronManager not initialized' });
+      return;
+    }
+
+    const status = this.cronManager.getStatus();
+    res.json(status);
   }
 }

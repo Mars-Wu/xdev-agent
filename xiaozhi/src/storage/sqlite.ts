@@ -16,6 +16,7 @@ import {
   ExpertRecord,
   SessionRecord as ExpertSessionRecord,
 } from '../expert/types';
+import { CronTaskRecord } from '../cron/types';
 
 // ==================== 飞书会话记录（兼容旧版）====================
 
@@ -211,6 +212,138 @@ export class SQLiteStorage {
       CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
       CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
     `);
+
+    // ==================== Cron 定时任务表 ====================
+    this.initCronTable();
+  }
+
+  // ==================== Cron 定时任务表初始化 ====================
+
+  /**
+   * 初始化 Cron 任务表（可单独调用）
+   */
+  initCronTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS cron_tasks (
+        id TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        cron_expr TEXT NOT NULL,
+        task_content TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        silent INTEGER DEFAULT 0,
+        last_run TEXT,
+        last_error TEXT,
+        last_result TEXT,
+        run_count INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_cron_tasks_chat_id ON cron_tasks(chat_id);
+      CREATE INDEX IF NOT EXISTS idx_cron_tasks_enabled ON cron_tasks(enabled);
+    `);
+  }
+
+  // ==================== Cron 定时任务操作 ====================
+
+  /**
+   * 保存 Cron 任务
+   */
+  saveCronTask(task: CronTaskRecord): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO cron_tasks (id, description, cron_expr, task_content, chat_id, enabled, silent, last_run, last_error, last_result, run_count, created_at)
+      VALUES (@id, @description, @cron_expr, @task_content, @chat_id, @enabled, @silent, @last_run, @last_error, @last_result, @run_count, @created_at)
+      ON CONFLICT(id) DO UPDATE SET
+        description = @description,
+        cron_expr = @cron_expr,
+        task_content = @task_content,
+        enabled = @enabled,
+        silent = @silent,
+        last_run = @last_run,
+        last_error = @last_error,
+        last_result = @last_result,
+        run_count = @run_count
+    `);
+
+    stmt.run({
+      id: task.id,
+      description: task.description,
+      cron_expr: task.cron_expr,
+      task_content: task.task_content,
+      chat_id: task.chat_id,
+      enabled: task.enabled,
+      silent: task.silent,
+      last_run: task.last_run || null,
+      last_error: task.last_error || null,
+      last_result: task.last_result || null,
+      run_count: task.run_count,
+      created_at: task.created_at,
+    });
+  }
+
+  /**
+   * 获取 Cron 任务
+   */
+  getCronTask(id: string): CronTaskRecord | undefined {
+    const stmt = this.db.prepare('SELECT * FROM cron_tasks WHERE id = ?');
+    return stmt.get(id) as CronTaskRecord | undefined;
+  }
+
+  /**
+   * 获取所有 Cron 任务
+   */
+  getAllCronTasks(): CronTaskRecord[] {
+    const stmt = this.db.prepare('SELECT * FROM cron_tasks ORDER BY created_at DESC');
+    return stmt.all() as CronTaskRecord[];
+  }
+
+  /**
+   * 获取指定聊天的 Cron 任务
+   */
+  getCronTasksByChatId(chatId: string): CronTaskRecord[] {
+    const stmt = this.db.prepare('SELECT * FROM cron_tasks WHERE chat_id = ? ORDER BY created_at DESC');
+    return stmt.all(chatId) as CronTaskRecord[];
+  }
+
+  /**
+   * 更新 Cron 任务状态
+   */
+  updateCronTaskStatus(id: string, updates: { lastRun?: string; lastError?: string | null; lastResult?: string | null; runCount?: number }): void {
+    const setClauses: string[] = [];
+    const params: Record<string, unknown> = { id };
+
+    if (updates.lastRun !== undefined) {
+      setClauses.push('last_run = @lastRun');
+      params.lastRun = updates.lastRun;
+    }
+    if (updates.lastError !== undefined) {
+      setClauses.push('last_error = @lastError');
+      params.lastError = updates.lastError;
+    }
+    if (updates.lastResult !== undefined) {
+      setClauses.push('last_result = @lastResult');
+      params.lastResult = updates.lastResult;
+    }
+    if (updates.runCount !== undefined) {
+      setClauses.push('run_count = @runCount');
+      params.runCount = updates.runCount;
+    }
+
+    if (setClauses.length === 0) return;
+
+    const stmt = this.db.prepare(`UPDATE cron_tasks SET ${setClauses.join(', ')} WHERE id = ?`);
+    stmt.run(id);
+  }
+
+  /**
+   * 删除 Cron 任务
+   */
+  deleteCronTask(id: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM cron_tasks WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
   }
 
   // ==================== 飞书会话操作（兼容旧版）====================

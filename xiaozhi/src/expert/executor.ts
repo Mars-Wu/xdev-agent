@@ -14,6 +14,8 @@ import {
   ExpertError,
   ExpertErrorCode,
 } from './types';
+import { ProgressTracker } from './progress-tracker';
+import { FeatureListManager } from './feature-list';
 
 const logger = createLogger('expert-executor');
 
@@ -62,9 +64,9 @@ interface ProcessInfo {
 /**
  * 专家执行器
  *
- * 会话策略：
- * - shouldContinue: true  -> 使用 --continue，继续该工作目录的最近会话
- * - shouldContinue: false -> 新会话（默认）
+ * 会话策略:
+ * - shouldContinue: true  -> 使用 --continue 继续该工作目录的最近会话
+ * - shouldContinue: false -> 新会话(默认)
  *
  * Claude CLI 会话是基于工作目录隔离的，--continue 会自动选择该目录最近的会话
  */
@@ -81,12 +83,21 @@ export class ExpertExecutor {
   private callbacks: ExecutorCallbacks = {};
   private healthCheckTimer?: NodeJS.Timeout;
 
+  // 新增：Progress Tracker
+  private progressTracker: ProgressTracker;
+
+  // 新增：Feature List Manager
+  private featureListManager: FeatureListManager;
+
   constructor(config: ExecutorConfig) {
     this.sessionManager = config.sessionManager;
     this.serverPort = config.serverPort;
     this.defaultTimeout = config.defaultTimeout || 30 * 60 * 1000; // 30 分钟
     this.preventRecursion = config.preventRecursion ?? true;
     this.healthCheckInterval = config.healthCheckInterval || 60000; // 1 分钟
+
+    this.progressTracker = new ProgressTracker();
+    this.featureListManager = new FeatureListManager();
 
     // 启动健康检查
     this.startHealthCheck();
@@ -111,7 +122,7 @@ export class ExpertExecutor {
     if (this.preventRecursion && process.env.XIAOZHI_EXPERT_MODE === 'true') {
       throw this.createError(
         ExpertErrorCode.RECURSION_DENIED,
-        '递归调用被禁止：专家不能调用其他专家'
+        '递归调用被禁止: 专家不能调用其他专家'
       );
     }
 
@@ -235,7 +246,7 @@ export class ExpertExecutor {
         // 延迟清理，给完成回调一些时间
         setTimeout(() => {
           if (this.runningProcesses.has(sessionId)) {
-            logger.warn(`会话 ${sessionId} 未收到完成回调，执行清理`);
+            logger.warn(`会话 ${sessionId} 未收到完成回调， 执行清理`);
 
             const expertError = this.createError(
               ExpertErrorCode.PROCESS_EXIT_UNEXPECTED,
@@ -296,24 +307,45 @@ export class ExpertExecutor {
       logger.debug(`停止会话 ${sessionId} 时进程已不存在`);
     }
 
-    this.cleanup(sessionId, false);
   }
 
   /**
-   * 处理完成回调
+   * 处理完成回调（新增进度追踪）
    */
-  handleComplete(
+  async handleComplete(
     sessionId: string,
     success: boolean,
     result: string,
     duration?: number
-  ): void {
+  ): Promise<void> {
     const processInfo = this.runningProcesses.get(sessionId);
-    const actualDuration = duration || (processInfo ? Date.now() - processInfo.startTime : 0);
+    if (!processInfo) {
+      logger.warn(`收到未知会话 ${sessionId} 的完成回调`);
+      return;
+    }
 
+    const actualDuration = duration || Date.now() - processInfo.startTime;
     logger.info(`会话 ${sessionId} 完成: success=${success}, duration=${actualDuration}ms`);
-    this.cleanup(sessionId, success);
 
+    // 更新进度追踪
+    try {
+      const workDir = processInfo.workDir;
+      if (workDir) {
+        await this.progressTracker.markCompleted(
+          workDir,
+          processInfo.expertName,
+          '任务完成',
+          result.slice(0, 500)
+        );
+      }
+    } catch (error) {
+      logger.warn('更新进度追踪失败:', error);
+    }
+
+    // 清理资源
+    this.cleanup(sessionId, true);
+
+    // 触发回调
     const execResult: ExecutionResult = {
       success,
       output: result,
@@ -369,7 +401,6 @@ export class ExpertExecutor {
    */
   private checkProcesses(): void {
     const now = Date.now();
-    const staleThreshold = 5 * 60 * 1000; // 5 分钟无响应视为过期
 
     for (const [sessionId, info] of this.runningProcesses) {
       try {
@@ -408,7 +439,7 @@ export class ExpertExecutor {
   }
 
   /**
-   * 关闭执行器，清理所有资源
+   * 关闭执行器， 清理所有资源
    */
   shutdown(): void {
     logger.info('关闭专家执行器...');
@@ -431,7 +462,7 @@ export class ExpertExecutor {
   }
 
   /**
-   * 构建 Claude 命令参数
+   * 构建 Claude 娡令参数
    */
   private buildClaudeArgs(model: string, shouldContinue?: boolean): string[] {
     const args: string[] = [];
@@ -481,10 +512,10 @@ ${task}
 
 ## 完成后回调
 
-任务完成后，**必须**执行以下命令报告结果（带重试机制）：
+任务完成后， **必须**执行以下命令报告结果（带重试机制):
 
 \`\`\`bash
-# 带重试的回调命令（最多尝试 3 次）
+# 带重试的回调命令(最多尝试 3 次)
 for i in 1 2 3; do
   response=$(curl -s -w "\\n%{http_code}" -X POST ${callbackUrl} \\
     -H "Content-Type: application/json" \\
@@ -506,11 +537,10 @@ done
 \`\`\`
 
 ## 重要提醒
-
-1. 完成任务后，**必须**调用上述 curl 命令报告结果
+1. 完成任务后， **必须**调用上述 curl 命令报告结果
 2. 不要跳过报告步骤
-3. 即使遇到问题，也要报告失败原因（success: false）
-4. 如果回调失败，命令会自动重试最多 3 次
+3. 即使遇到问题, 也要报告失败原因(success: false)
+4. 如果回调失败, 命令会自动重试最多 3 次
 `;
   }
 
@@ -572,11 +602,11 @@ done
       const processInfo = this.runningProcesses.get(sessionId);
       const duration = processInfo ? Date.now() - processInfo.startTime : 0;
 
-      logger.warn(`会话 ${sessionId} 运行超时 (duration: ${duration}ms)，强制终止`);
+      logger.warn(`会话 ${sessionId} 运行超时 (duration: ${duration}ms), 强制终止`);
       this.stop(sessionId, '超时');
 
       // 使用 terminated 状态而不是 failed
-      // 这样后续的回调将被拒绝，避免状态混乱
+      // 这样后续的回调将被拒绝, 避免状态混乱
       this.callbacks.onTerminated?.(sessionId, `执行超时 (${Math.floor(duration / 1000)}秒)`);
 
       // 同时触发错误回调用于通知

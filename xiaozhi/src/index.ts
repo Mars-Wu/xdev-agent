@@ -7,6 +7,7 @@ import { FeishuClient } from './feishu/client';
 import { ClaudeNativeAgent } from './core/claude-native-agent';
 import { HooksReceiver } from './api/hooks-receiver';
 import { ExpertManager } from './expert/manager';
+import { CronManager } from './cron/manager';
 import { SQLiteStorage } from './storage/sqlite';
 import { MemoryMonitor } from './monitor/memory-monitor';
 import { createLogger } from './utils/logger';
@@ -110,7 +111,16 @@ async function main() {
   await expertManager.initialize();
   logger.info(`专家管理器已初始化`);
 
-  // 4. HTTP 接收器
+  // 4. Cron 定时任务管理器
+  const cronManager = new CronManager(storage, {
+    callbackUrl: `http://localhost:${hooksPort}/api/callbacks/complete`,
+    maxTasks: 100,
+    enablePersistence: true,
+  });
+  await cronManager.initialize();
+  logger.info(`Cron 任务管理器已初始化`);
+
+  // 5. HTTP 接收器
   const hooksReceiver = new HooksReceiver();
   hooksReceiver.listen(hooksPort);
   logger.info(`HTTP接收器已启动，端口 ${hooksPort}`);
@@ -133,6 +143,7 @@ async function main() {
   // 7. 关联组件
   hooksReceiver.setAgent(agent);
   hooksReceiver.setExpertManager(expertManager);
+  hooksReceiver.setCronManager(cronManager);
   logger.info('组件已关联');
 
   // 8. 消息处理
@@ -162,6 +173,8 @@ async function main() {
   logger.info(`  - POST /api/experts/:name/call - 调用专家`);
   logger.info(`  - GET  /api/sessions/:id     - 获取会话状态`);
   logger.info(`  - POST /api/callbacks/complete - 专家完成回调`);
+  logger.info(`  - GET  /api/cron/tasks       - 获取定时任务列表`);
+  logger.info(`  - POST /api/cron/tasks       - 创建定时任务`);
   logger.info('==========================================');
   logger.info('AI管家小智已就绪');
 
@@ -169,6 +182,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     logger.info(`收到${signal}，正在关闭...`);
     memoryMonitor.stop();
+    cronManager.stop();
     hooksReceiver.close();
     await agent.stop();
     await feishuClient.stop();

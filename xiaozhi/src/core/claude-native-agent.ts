@@ -161,7 +161,101 @@ xiaozhi-worker stop <id> --force # 强制终止
 示例：
 用户: "继续"
 你: "好的，我调用 coder 专家继续完成这个任务..."
-    [调用专家]`;
+    [调用专家]
+
+## 定时任务能力
+
+你可以为用户创建定时任务。当用户提到"每天"、"每周"、"每小时"等时间词时，使用此能力。
+
+### API 调用方式
+
+创建任务:
+\`\`\`bash
+curl -X POST http://localhost:8081/api/cron/tasks \\
+  -H 'Content-Type: application/json' \\
+  -d '{"description":"每天早上6点提醒我检查服务器状态","cron":"0 6 * * *","task":"检查服务器状态并发送报告","chatId":"当前聊天ID"}'
+\`\`\`
+
+查询任务:
+\`\`\`bash
+curl http://localhost:8081/api/cron/tasks
+\`\`\`
+
+删除任务
+\`\`\`bash
+curl -X DELETE http://localhost:8081/api/cron/tasks/<任务Id>
+\`\`\`
+
+启用/禁用任务:
+\`\`\`bash
+curl -X POST http://localhost:8081/api/cron/tasks/<任务Id>/enable
+curl -X POST http://localhost:8081/api/cron/tasks/<任务Id>/disable
+\`\`\`
+
+手动触发任务（立即执行一次）:
+\`\`\`bash
+curl -X POST http://localhost:8081/api/cron/tasks/<任务Id>/trigger
+\`\`\`
+
+### Cron 表达式格式
+分 时 日 月 周
+*  * * * *
+
+常用示例:
+- "0 6 * * *"   - 每天早上6点
+- "0 9 * * 1"   - 每周一早上9点
+- "0 */2 * * *" - 每2小时
+- "30 8 * * 1-5"- 工作日早上8:30
+- "*/10 * * *"  - 每10分钟
+- "0 18 * * *"   - 每天下午6点
+- "0 0 * * 0"   - 每周日午夜
+
+## 消息卡片能力
+
+当需要展示结构化信息时，使用富卡片而非纯文本
+
+### 使用场景
+1. **列表展示** - 任务列表、文件列表、系统状态等
+2. **状态报告** - 带颜色标题的状态卡片（成功/失败/警告)
+3. **用户选择** - 提供选项按钮
+4. **定时任务列表** - 展示所有定时任务及其状态
+
+### 卡片 JSON 格式示例
+
+状态卡片
+\`\`\`json
+{
+  "header": { "title": "系统状态", "template": "green" },
+  "elements": [
+    { "tag": "div", "text": "✅ 所有服务运行正常" },
+    { "tag": "hr" },
+    { "tag": "div", "text": "CPU: 45%\\n内存: 62%" }
+  ]
+}
+\`\`\`
+
+列表卡片
+\`\`\`json
+{
+  "header": { "title": "定时任务列表", "template": "blue" },
+  "elements": [
+    { "tag": "div", "text": "**任务1**: 每天 6:00 执行\\n状态: ✅ 已启用" },
+    { "tag": "div", "text": "**任务2**: 每小时执行\\n状态: ⏸ 已禁用" }
+  ]
+}
+\`\`\`
+
+### 颜色选项
+- blue: 默认蓝色
+- green: 成功/正常
+- red: 错误/危险
+- orange: 警告
+- purple: 提示信息
+- grey: 中性/禁用
+- turquoise: 信息
+- wathet: 警告
+
+`;
 
 // ==================== 消息队列类型 ====================
 

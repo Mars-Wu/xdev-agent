@@ -3,7 +3,7 @@
 // 支持自动重连机制
 
 import * as lark from '@larksuiteoapi/node-sdk';
-import { FeishuConfig, FeishuMessage, FeishuReply, MessageCard } from './types';
+import { FeishuConfig, FeishuMessage, FeishuReply, MessageCard, FeishuMsgType } from './types';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('feishu');
@@ -93,14 +93,10 @@ export class FeishuClient {
               || data.sender?.sender_id?.open_id
               || 'unknown_user';
 
-            await this.messageHandler({
-              messageId: data.message.message_id,
-              chatId: data.message.chat_id,
-              userId: userId,
-              content: this.parseContent(data.message.content),
-              msgType: data.message.message_type as FeishuMessage['msgType'],
-              timestamp: new Date(parseInt(data.message.create_time) * 1000),
-            });
+            // 解析消息（支持文件类型）
+            const parsedMessage = this.parseMessage(data, userId);
+
+            await this.messageHandler(parsedMessage);
           }
         },
       });
@@ -231,6 +227,114 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 解析消息（支持文件类型）
+   */
+  private parseMessage(data: any, userId: string): FeishuMessage {
+    const baseInfo = {
+      messageId: data.message.message_id,
+      chatId: data.message.chat_id,
+      userId: userId,
+      timestamp: new Date(parseInt(data.message.create_time) * 1000),
+    };
+
+    const msgType = data.message.message_type;
+    const contentStr = data.message.content;
+
+    // 根据消息类型解析
+    switch (msgType) {
+      case 'image': {
+        const content = JSON.parse(contentStr);
+        logger.debug('解析图片消息:', content);
+        return {
+          ...baseInfo,
+          msgType: 'image' as FeishuMsgType,
+          imageKey: content.image_key,
+          content: '[图片]',
+        };
+      }
+      case 'file': {
+        // 飞书文件消息是嵌套 JSON: {"value": "{\"file_key\":\"...\",\"file_name\":\"...\"}"}
+        const outerContent = JSON.parse(contentStr);
+        const content = typeof outerContent.value === 'string'
+          ? JSON.parse(outerContent.value)
+          : outerContent;
+        logger.debug('解析文件消息:', content);
+
+        // 获取 MIME 类型（飞书不提供，根据文件名推断）
+        const mimeType = this.inferMimeType(content.file_name);
+
+        // 飞书不提供文件大小，下载后才能知道
+        return {
+          ...baseInfo,
+          msgType: 'file' as FeishuMsgType,
+          fileKey: content.file_key,
+          fileName: content.file_name,
+          fileSize: 0, // 飞书不提供，需要下载后获取
+          fileType: mimeType,
+          content: `[文件: ${content.file_name}]`,
+        };
+      }
+      case 'media': {
+        const content = JSON.parse(contentStr);
+        logger.debug('解析媒体消息:', content);
+        return {
+          ...baseInfo,
+          msgType: 'media' as FeishuMsgType,
+          fileKey: content.file_key,
+          fileName: content.file_name,
+          content: `[媒体: ${content.file_name}]`,
+        };
+      }
+      case 'audio': {
+        const content = JSON.parse(contentStr);
+        logger.debug('解析音频消息:', content);
+        return {
+          ...baseInfo,
+          msgType: 'audio' as FeishuMsgType,
+          fileKey: content.file_key,
+          content: '[音频]',
+        };
+      }
+      default:
+        // 文本消息
+        return {
+          ...baseInfo,
+          msgType: msgType as FeishuMsgType,
+          content: this.parseContent(contentStr),
+        };
+    }
+  }
+
+  /**
+   * 根据文件名推断 MIME 类型
+   */
+  private inferMimeType(fileName: string): string {
+    const ext = fileName.toLowerCase().split('.').pop() || '';
+    const mimeMap: Record<string, string> = {
+      'pdf': 'application/pdf',
+      'doc': 'application/msword',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xls': 'application/vnd.ms-excel',
+      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'png': 'image/png',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'txt': 'text/plain',
+      'csv': 'text/csv',
+      'json': 'application/json',
+      'xml': 'application/xml',
+      'zip': 'application/zip',
+      'rar': 'application/x-rar-compressed',
+      '7z': 'application/x-7z-compressed',
+    };
+    return mimeMap[ext] || 'application/octet-stream';
+  }
+
   private parseContent(content: string): string {
     try {
       const parsed = JSON.parse(content);
@@ -247,5 +351,62 @@ export class FeishuClient {
     }
     // 统一使用纯文本格式（飞书的 text 类型只接受 {text: "..."} 格式）
     return JSON.stringify({ text: reply.content });
+  }
+
+  /**
+   * 下载文件（用户发送的文件资源）
+   * @param fileKey 文件标识
+   * @param messageId 消息 ID（必需，用于获取用户发送的文件）
+   * @param type 文件类型 ('image' 或 'file')
+   * @returns 文件 Buffer
+   */
+  async downloadFile(fileKey: string, messageId: string, type: 'image' | 'file' = 'file'): Promise<Buffer> {
+    try {
+      logger.info(`下载文件: ${fileKey}, 消息ID: ${messageId}, 类型: ${type}`);
+
+      const token = await this.getTenantAccessToken();
+
+      // 获取用户发送的文件资源
+      // https://open.feishu.cn/document/server-docs/im-v1/message-resources/get
+      const url = `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=${type}`;
+
+      logger.debug(`下载 URL: ${url}`);
+
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`下载文件失败: ${response.status} ${response.statusText}`, errorText);
+        throw new Error(`下载文件失败: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      logger.info(`文件下载成功: ${arrayBuffer.byteLength} bytes`);
+      return Buffer.from(arrayBuffer);
+    } catch (error) {
+      logger.error(`下载文件失败 (${fileKey}):`, error);
+      throw error;
+    }
+  }
+
+  private async getTenantAccessToken(): Promise<string> {
+    // 使用 lark SDK 的内置方法获取 token
+    const response = await this.client.auth.tenantAccessToken.internal({
+      data: {
+        app_id: this.config.appId,
+        app_secret: this.config.appSecret,
+      },
+    } as any);
+
+    // lark SDK 返回的结构可能是 response.tenant_access_token 或者在 data 中
+    const token = (response as any).tenant_access_token || (response as any).data?.tenant_access_token;
+    if (!token) {
+      throw new Error('获取 tenant_access_token 失败');
+    }
+    return token;
   }
 }

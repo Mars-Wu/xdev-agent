@@ -107,11 +107,15 @@ xiaozhi/
 │   │   ├── session-manager.ts       # 会话管理
 │   │   ├── progress-tracker.ts      # 进度追踪 (Harness)
 │   │   └── feature-list.ts          # 功能清单 (Harness)
+│   ├── file/                        # 文件处理模块
+│   │   ├── manager.ts               # 文件管理器（下载、存储）
+│   │   └── analyzer.ts              # 文件分析器（PDF/Word/Excel/图片）
 │   ├── cron/
 │   │   ├── manager.ts               # 定时任务管理器
 │   │   └── types.ts                 # 类型定义
 │   ├── feishu/
 │   │   ├── client.ts                # 飞书客户端
+│   │   ├── types.ts                 # 类型定义
 │   │   ├── card-builder.ts          # 富卡片构建器
 │   │   └── card-types.ts            # 卡片类型定义
 │   ├── upgrade/                     # 自我升级系统
@@ -130,6 +134,7 @@ xiaozhi/
 └── package.json
 
 ~/.xiaozhi/
+├── files/                           # 用户上传的文件存储
 ├── experts/                         # 专家配置
 │   ├── coder/CLAUDE.md
 │   ├── analyst/CLAUDE.md
@@ -218,6 +223,41 @@ interface CronTask {
 7. **定时任务** - 支持 cron 表达式的定时任务管理
 8. **进度追踪** - Harness 工程最佳实践，跨会话状态追踪
 9. **内存监控** - 自动监控内存使用，超阈值告警
+10. **文件处理** - 支持飞书文件接收、智能分析和自然语言管理
+
+## 文件处理功能
+
+用户可以通过飞书发送文件给小智，小智会自动下载、分析并存储。
+
+### 支持的文件类型
+
+| 类型 | 扩展名 | 处理方式 |
+|------|--------|----------|
+| PDF | .pdf | 提取文本内容 |
+| Word | .doc, .docx | 提取文本内容 |
+| Excel | .xls, .xlsx | 解析表格数据 |
+| 图片 | .png, .jpg, .gif, .webp | Claude Vision 多模态分析 |
+
+### 文件管理
+
+用户可以用自然语言管理文件：
+- "有什么文件" → 列出所有存储的文件
+- "删除那个 xxx 文档" → 删除指定文件
+- "清理一下旧文件" → 清理过期文件
+
+### 技术实现
+
+- **FileManager** (`src/file/manager.ts`): 文件下载、存储、元数据管理
+- **FileAnalyzer** (`src/file/analyzer.ts`): 多格式文件解析
+  - PDF: pdf-parse
+  - Word: mammoth
+  - Excel: xlsx (SheetJS)
+  - 图片: Claude Vision
+
+### 存储位置
+
+- 文件: `~/.xiaozhi/files/`
+- 元数据: SQLite `files` 表
 
 ## 服务管理
 

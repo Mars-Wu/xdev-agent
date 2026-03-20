@@ -50,6 +50,19 @@ export interface WorkerRecord {
   completedAt: string | null;
 }
 
+// ==================== 文件记录（新增）====================
+
+export interface FileRecord {
+  id: string;
+  original_name: string;
+  local_path: string;
+  mime_type: string;
+  size: number;
+  chat_id: string;
+  message_id: string;
+  created_at: string;
+}
+
 const logger = createLogger('storage');
 
 export class SQLiteStorage {
@@ -213,11 +226,119 @@ export class SQLiteStorage {
       CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
     `);
 
+    // ==================== 文件表（新增）====================
+    this.initFilesTable();
+
     // ==================== Cron 定时任务表 ====================
     this.initCronTable();
   }
 
   // ==================== Cron 定时任务表初始化 ====================
+
+  /**
+   * 初始化文件表（可单独调用）
+   */
+  initFilesTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS files (
+        id TEXT PRIMARY KEY,
+        original_name TEXT NOT NULL,
+        local_path TEXT NOT NULL,
+        mime_type TEXT,
+        size INTEGER,
+        chat_id TEXT,
+        message_id TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_files_chat_id ON files(chat_id);
+      CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
+    `);
+  }
+
+  // ==================== 文件操作（新增）====================
+
+  /**
+   * 保存文件记录
+   */
+  saveFileRecord(file: FileRecord): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO files (id, original_name, local_path, mime_type, size, chat_id, message_id, created_at)
+      VALUES (@id, @original_name, @local_path, @mime_type, @size, @chat_id, @message_id, @created_at)
+      ON CONFLICT(id) DO UPDATE SET
+        original_name = @original_name,
+        local_path = @local_path,
+        mime_type = @mime_type,
+        size = @size
+    `);
+
+    stmt.run({
+      id: file.id,
+      original_name: file.original_name,
+      local_path: file.local_path,
+      mime_type: file.mime_type,
+      size: file.size,
+      chat_id: file.chat_id,
+      message_id: file.message_id,
+      created_at: file.created_at,
+    });
+  }
+
+  /**
+   * 获取文件记录
+   */
+  getFileRecord(id: string): FileRecord | undefined {
+    const stmt = this.db.prepare('SELECT * FROM files WHERE id = ?');
+    return stmt.get(id) as FileRecord | undefined;
+  }
+
+  /**
+   * 获取聊天的所有文件
+   */
+  getFileRecordsByChatId(chatId: string, limit: number = 50): FileRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM files
+      WHERE chat_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(chatId, limit) as FileRecord[];
+  }
+
+  /**
+   * 获取所有文件
+   */
+  getAllFileRecords(limit: number = 100): FileRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM files
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    return stmt.all(limit) as FileRecord[];
+  }
+
+  /**
+   * 删除文件记录
+   */
+  deleteFileRecord(id: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM files WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * 清理旧文件记录
+   */
+  cleanupOldFileRecords(days: number = 30): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM files
+      WHERE datetime(created_at) < datetime('now', '-' || ? || ' days')
+    `);
+    const result = stmt.run(days);
+    return result.changes;
+  }
 
   /**
    * 初始化 Cron 任务表（可单独调用）

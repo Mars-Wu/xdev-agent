@@ -9,7 +9,9 @@ import { FeishuClient } from '../feishu/client';
 import { FeishuMessage } from '../feishu/types';
 import { createLogger } from '../utils/logger';
 import { getDefaultModel, PATHS } from '../config';
-import { SQLiteStorage } from '../storage/sqlite';
+import { SQLiteStorage, FileRecord } from '../storage/sqlite';
+import { FileManager, FileInfo } from '../file/manager';
+import { FileAnalyzer, FileAnalysis } from '../file/analyzer';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
@@ -387,6 +389,10 @@ export class ClaudeNativeAgent {
   // 记忆压缩（P1）
   private storage: SQLiteStorage;
 
+  // 文件处理
+  private fileManager: FileManager;
+  private fileAnalyzer: FileAnalyzer;
+
   constructor(config: ClaudeNativeAgentConfig) {
     this.feishuClient = config.feishuClient;
     this.model = config.model || getDefaultModel();
@@ -404,6 +410,27 @@ export class ClaudeNativeAgent {
 
     // 初始化存储（用于记忆压缩）
     this.storage = new SQLiteStorage(PATHS.DB_PATH);
+
+    // 初始化文件处理器
+    this.fileAnalyzer = new FileAnalyzer();
+    this.fileManager = new FileManager(
+      async (fileKey: string, messageId: string, type: string) => {
+        return this.feishuClient.downloadFile(fileKey, messageId, type as 'image' | 'file');
+      },
+      (fileInfo: FileInfo) => {
+        const record: FileRecord = {
+          id: fileInfo.id,
+          original_name: fileInfo.originalName,
+          local_path: fileInfo.localPath,
+          mime_type: fileInfo.mimeType,
+          size: fileInfo.size,
+          chat_id: fileInfo.chatId,
+          message_id: fileInfo.messageId,
+          created_at: fileInfo.createdAt.toISOString(),
+        };
+        this.storage.saveFileRecord(record);
+      }
+    );
   }
 
   /**
@@ -534,6 +561,12 @@ export class ClaudeNativeAgent {
       this.defaultChatId = msg.chatId;
     }
 
+    // 检查是否为文件消息
+    if (['image', 'file', 'media'].includes(msg.msgType)) {
+      await this.handleFileMessage(msg);
+      return;
+    }
+
     // 检查特殊命令（优先处理，不入队）
     const trimmedContent = msg.content.trim();
     if (trimmedContent === '/compact' || trimmedContent === '/压缩') {
@@ -550,6 +583,17 @@ export class ClaudeNativeAgent {
     }
     if (trimmedContent === '/reset' || trimmedContent === '/重置') {
       await this.handleResetCommand(msg);
+      return;
+    }
+
+    // 文件管理命令
+    if (trimmedContent === '/files' || trimmedContent === '/文件列表' || trimmedContent === '列出文件') {
+      await this.handleListFilesCommand(msg);
+      return;
+    }
+    if (trimmedContent.startsWith('/delete ') || trimmedContent.startsWith('/删除文件 ')) {
+      const fileName = trimmedContent.replace(/^\/(delete |删除文件 )/, '').trim();
+      await this.handleDeleteFileCommand(msg, fileName);
       return;
     }
 
@@ -1009,6 +1053,252 @@ export class ClaudeNativeAgent {
         type: 'text',
       });
     }
+  }
+
+  /**
+   * 列出存储的文件
+   */
+  private async handleListFilesCommand(msg: FeishuMessage): Promise<void> {
+    try {
+      const files = this.storage.getAllFileRecords();
+
+      if (files.length === 0) {
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: '📁 暂无存储的文件。',
+          type: 'text',
+        });
+        return;
+      }
+
+      let reply = `📁 已存储的文件 (共 ${files.length} 个):\n\n`;
+      files.forEach((file, index) => {
+        const size = FileManager.formatBytes(file.size);
+        const date = new Date(file.created_at).toLocaleDateString('zh-CN');
+        reply += `${index + 1}. **${file.original_name}**\n`;
+        reply += `   大小: ${size} | 日期: ${date}\n`;
+        reply += `   ID: \`${file.id}\`\n\n`;
+      });
+
+      reply += `_提示: 使用 "/删除文件 <文件名或ID>" 删除文件_`;
+
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: reply,
+        type: 'text',
+      });
+    } catch (error) {
+      logger.error('列出文件失败:', error);
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: '❌ 列出文件失败，请稍后重试。',
+        type: 'text',
+      });
+    }
+  }
+
+  /**
+   * 删除文件
+   */
+  private async handleDeleteFileCommand(msg: FeishuMessage, fileNameOrId: string): Promise<void> {
+    try {
+      if (!fileNameOrId) {
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: '❌ 请指定要删除的文件名或ID。\n用法: /删除文件 <文件名或ID>',
+          type: 'text',
+        });
+        return;
+      }
+
+      // 获取文件列表
+      const files = this.storage.getAllFileRecords();
+
+      // 查找匹配的文件（按ID或文件名）
+      let targetFile = files.find(f => f.id === fileNameOrId);
+      if (!targetFile) {
+        // 尝试按文件名匹配（支持部分匹配）
+        const matches = files.filter(f =>
+          f.original_name.toLowerCase().includes(fileNameOrId.toLowerCase())
+        );
+        if (matches.length === 1) {
+          targetFile = matches[0];
+        } else if (matches.length > 1) {
+          let reply = `❌ 找到多个匹配的文件，请更精确地指定:\n`;
+          matches.forEach(f => {
+            reply += `- ${f.original_name} (ID: ${f.id})\n`;
+          });
+          await this.feishuClient.sendMessage(msg.chatId, {
+            content: reply,
+            type: 'text',
+          });
+          return;
+        }
+      }
+
+      if (!targetFile) {
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: `❌ 未找到文件: ${fileNameOrId}\n使用 "/文件列表" 查看所有文件。`,
+          type: 'text',
+        });
+        return;
+      }
+
+      // 删除本地文件
+      const deleted = await this.fileManager.deleteFile(targetFile.local_path);
+
+      if (deleted) {
+        // 从数据库删除记录
+        this.storage.deleteFileRecord(targetFile.id);
+
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: `✅ 已删除文件: ${targetFile.original_name}`,
+          type: 'text',
+        });
+        logger.info(`文件已删除: ${targetFile.original_name}`);
+      } else {
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: `❌ 删除文件失败: ${targetFile.original_name}`,
+          type: 'text',
+        });
+      }
+    } catch (error) {
+      logger.error('删除文件失败:', error);
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: '❌ 删除文件失败，请稍后重试。',
+        type: 'text',
+      });
+    }
+  }
+
+  /**
+   * 处理文件消息
+   * 下载文件、分析内容、构建上下文并回复用户
+   */
+  private async handleFileMessage(msg: FeishuMessage): Promise<void> {
+    try {
+      // 获取文件信息
+      const fileKey = msg.fileKey || msg.imageKey;
+      if (!fileKey) {
+        await this.feishuClient.sendMessage(msg.chatId, {
+          content: '❌ 无法获取文件标识',
+          type: 'text',
+        });
+        return;
+      }
+
+      const fileName = msg.fileName || 'unknown';
+      const mimeType = msg.fileType || 'application/octet-stream';
+      const fileSize = msg.fileSize || 0;
+
+      // 发送接收通知（如果大小未知，显示"正在获取..."）
+      const sizeText = fileSize > 0 ? FileManager.formatBytes(fileSize) : '正在获取...';
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: `📥 已接收文件 "${fileName}" (${sizeText})\n正在下载并分析...`,
+        type: 'text',
+      });
+
+      // 下载文件
+      logger.info(`开始下载文件: ${fileName}`);
+      const downloadedFile = await this.fileManager.downloadAndSave(
+        fileKey,
+        msg.msgType,
+        fileName,
+        mimeType,
+        fileSize,
+        msg.chatId,
+        msg.messageId
+      );
+
+      // 分析文件
+      logger.info(`开始分析文件: ${fileName}`);
+      const analysis = await this.fileAnalyzer.analyze(downloadedFile.localPath, mimeType);
+
+      // 构建上下文消息
+      const contextMessage = this.buildFileContextMessage(downloadedFile, analysis);
+
+      // 发送分析结果（使用实际下载后的文件大小）
+      let replyMessage = `✅ 文件分析完成\n\n`;
+      replyMessage += `**文件名**: ${fileName}\n`;
+      replyMessage += `**类型**: ${FileAnalyzer.getTypeDescription(mimeType)}\n`;
+      replyMessage += `**大小**: ${FileManager.formatBytes(downloadedFile.size)}\n`;
+
+      if (analysis.summary) {
+        replyMessage += `\n**摘要**: ${analysis.summary}\n`;
+      }
+
+      if (analysis.metadata) {
+        if (analysis.metadata.pages) {
+          replyMessage += `**页数**: ${analysis.metadata.pages}\n`;
+        }
+        if (analysis.metadata.wordCount) {
+          replyMessage += `**字数**: ${analysis.metadata.wordCount}\n`;
+        }
+        if (analysis.metadata.sheets) {
+          replyMessage += `**工作表**: ${(analysis.metadata.sheets as string[]).join(', ')}\n`;
+        }
+      }
+
+      // 如果有文本内容，添加预览
+      if (analysis.text && analysis.text.length > 0) {
+        const preview = analysis.text.slice(0, 500);
+        replyMessage += `\n**内容预览**:\n${preview}${analysis.text.length > 500 ? '...' : ''}\n`;
+      }
+
+      replyMessage += `\n你可以针对这个文件提问，我会帮你分析。`;
+
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: replyMessage,
+        type: 'text',
+      });
+
+      logger.info(`文件处理完成: ${fileName}, 类型: ${analysis.type}`);
+
+      // 将文件信息加入会话上下文（通过发送给 Claude）
+      const claudeMessage = `[用户发送了一个文件]\n${contextMessage}\n\n请记住这个文件的内容，用户可能会针对它提问。`;
+
+      // 异步发送给 Claude（不等待）
+      this.callClaudeWithRetry(claudeMessage).catch(error => {
+        logger.warn('文件内容同步到 Claude 会话失败:', error);
+      });
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '处理文件时发生错误';
+      logger.error('文件处理失败:', error);
+      await this.feishuClient.sendMessage(msg.chatId, {
+        content: `❌ 文件处理失败: ${errorMessage}\n\n请稍后重试或直接发送文件内容。`,
+        type: 'text',
+      });
+    }
+  }
+
+  /**
+   * 构建文件上下文消息
+   */
+  private buildFileContextMessage(
+    file: { originalName: string; mimeType: string; size: number; localPath: string },
+    analysis: FileAnalysis
+  ): string {
+    let message = `文件名: ${file.originalName}\n`;
+    message += `类型: ${analysis.type}\n`;
+    message += `大小: ${FileManager.formatBytes(file.size)}\n`;
+
+    if (analysis.metadata) {
+      message += `元数据: ${JSON.stringify(analysis.metadata)}\n`;
+    }
+
+    if (analysis.text) {
+      // 限制文本长度
+      const text = analysis.text.slice(0, 10000);
+      message += `\n文件内容:\n${text}\n`;
+    }
+
+    if (analysis.structured) {
+      const preview = JSON.stringify(analysis.structured, null, 2).slice(0, 3000);
+      message += `\n结构化数据:\n${preview}\n`;
+    }
+
+    if (analysis.imageBase64) {
+      message += `\n[这是一个图片文件，路径: ${file.localPath}]\n`;
+    }
+
+    return message;
   }
 
   /**

@@ -68,6 +68,22 @@ export interface LogConfig {
 }
 
 /**
+ * 会话上下文配置
+ */
+export interface SessionContextConfig {
+  // 是否启用自动压缩
+  autoCompact: boolean;
+  // 压缩阈值（剩余空间比例，0-1）
+  compactThreshold: number;
+  // 最大上下文 token 数
+  maxContextTokens: number;
+  // 保留最近 N 条消息
+  preserveRecent: number;
+  // 压缩策略
+  compactStrategy: 'sliding' | 'summary' | 'priority';
+}
+
+/**
  * 完整配置
  */
 export interface XiaozhiConfig {
@@ -77,6 +93,7 @@ export interface XiaozhiConfig {
   expert: ExpertConfig;
   security: SecurityConfig;
   log: LogConfig;
+  sessionContext: SessionContextConfig;
 }
 
 // ==================== 默认配置 ====================
@@ -111,6 +128,13 @@ const DEFAULT_CONFIG: XiaozhiConfig = {
     level: 'info',
     maxFileSize: 10 * 1024 * 1024, // 10 MB
     maxFiles: 5,
+  },
+  sessionContext: {
+    autoCompact: true,
+    compactThreshold: 0.15,        // 剩余 15% 时触发压缩
+    maxContextTokens: 128000,      // Claude 3.5 Sonnet 上下文窗口
+    preserveRecent: 10,            // 保留最近 10 条消息
+    compactStrategy: 'priority',   // 优先级策略
   },
 };
 
@@ -225,6 +249,24 @@ class ConfigManager {
       }
     }
 
+    // 会话上下文配置
+    const sessionContext: Partial<SessionContextConfig> = {};
+    if (process.env.XIAOZHI_AUTO_COMPACT === 'false') {
+      sessionContext.autoCompact = false;
+    }
+    if (process.env.XIAOZHI_MAX_CONTEXT_TOKENS) {
+      sessionContext.maxContextTokens = parseInt(process.env.XIAOZHI_MAX_CONTEXT_TOKENS, 10);
+    }
+    if (process.env.XIAOZHI_COMPACT_THRESHOLD) {
+      sessionContext.compactThreshold = parseFloat(process.env.XIAOZHI_COMPACT_THRESHOLD);
+    }
+    if (process.env.XIAOZHI_PRESERVE_RECENT) {
+      sessionContext.preserveRecent = parseInt(process.env.XIAOZHI_PRESERVE_RECENT, 10);
+    }
+    if (Object.keys(sessionContext).length > 0) {
+      config.sessionContext = { ...DEFAULT_CONFIG.sessionContext, ...sessionContext };
+    }
+
     return config;
   }
 
@@ -328,6 +370,13 @@ class ConfigManager {
    */
   getLogConfig(): LogConfig {
     return { ...this.config.log };
+  }
+
+  /**
+   * 获取会话上下文配置
+   */
+  getSessionContextConfig(): SessionContextConfig {
+    return { ...this.config.sessionContext };
   }
 
   /**

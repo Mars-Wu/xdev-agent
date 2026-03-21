@@ -20,6 +20,7 @@ import {
   QueuedTask,
   QueueStatus,
   ExpertSession,
+  DEFAULT_CONTEXT_CONFIG,
 } from './types';
 
 const logger = createLogger('expert-manager');
@@ -108,6 +109,10 @@ export class ExpertManager {
       maxTaskLength: config?.maxTaskLength ?? 10000,
       maxMessagesCount: config?.maxMessagesCount ?? 1000,
       sessionRetentionDays: config?.sessionRetentionDays ?? 30,
+      contextCompaction: {
+        ...DEFAULT_CONTEXT_CONFIG,
+        ...config?.contextCompaction,
+      },
     };
 
     this.isExpertEnvironment = process.env.XIAOZHI_EXPERT_MODE === 'true';

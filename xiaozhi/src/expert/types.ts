@@ -211,6 +211,65 @@ export interface SessionContinueParams {
   message: string;               // 继续消息
 }
 
+// ==================== 会话上下文管理 ====================
+
+/**
+ * 消息优先级
+ */
+export type MessagePriority = 'critical' | 'high' | 'normal' | 'low';
+
+/**
+ * 对话消息（增强版）
+ */
+export interface ConversationMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  name?: string;
+  timestamp?: Date;
+  priority?: MessagePriority;
+  tokenCount?: number;
+  // 是否可被压缩
+  compressible?: boolean;
+}
+
+/**
+ * 上下文压缩策略
+ */
+export type CompactionStrategy = 'none' | 'sliding' | 'summary' | 'priority';
+
+/**
+ * 上下文压缩配置
+ */
+export interface ContextCompactionConfig {
+  // 是否启用自动压缩
+  enabled: boolean;
+  // 压缩策略
+  strategy: CompactionStrategy;
+  // 触发压缩的阈值（剩余空间比例）
+  threshold: number;
+  // 保留最近 N 条消息
+  preserveRecent: number;
+  // 是否保留系统消息
+  preserveSystem: boolean;
+  // 是否保留工具结果
+  preserveToolResults: boolean;
+  // 最大上下文 token 数
+  maxContextTokens: number;
+}
+
+/**
+ * 默认上下文压缩配置
+ */
+export const DEFAULT_CONTEXT_CONFIG: ContextCompactionConfig = {
+  enabled: true,
+  strategy: 'priority',
+  threshold: 0.15,
+  preserveRecent: 10,
+  preserveSystem: true,
+  preserveToolResults: true,
+  maxContextTokens: 128000,
+};
+
 // ==================== 管理器配置 ====================
 
 /**
@@ -223,6 +282,8 @@ export interface ExpertManagerConfig {
   maxTaskLength?: number;        // 任务描述最大长度，默认 10000
   maxMessagesCount?: number;     // 消息存储最大数量，默认 1000
   sessionRetentionDays?: number; // 会话保留天数，默认 30
+  // 新增：上下文压缩配置
+  contextCompaction?: Partial<ContextCompactionConfig>;
 }
 
 // ==================== 任务队列 ====================

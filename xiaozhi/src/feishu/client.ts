@@ -3,7 +3,18 @@
 // 支持自动重连机制
 
 import * as lark from '@larksuiteoapi/node-sdk';
-import { FeishuConfig, FeishuMessage, FeishuReply, MessageCard, FeishuMsgType } from './types';
+import {
+  FeishuConfig,
+  FeishuMessage,
+  FeishuReply,
+  MessageCard,
+  FeishuMsgType,
+  FeishuRawEventData,
+  FeishuFileContent,
+  FeishuImageContent,
+  FeishuApiResponse,
+  TenantAccessTokenResponse,
+} from './types';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('feishu');
@@ -230,7 +241,7 @@ export class FeishuClient {
   /**
    * 解析消息（支持文件类型）
    */
-  private parseMessage(data: any, userId: string): FeishuMessage {
+  private parseMessage(data: FeishuRawEventData, userId: string): FeishuMessage {
     const baseInfo = {
       messageId: data.message.message_id,
       chatId: data.message.chat_id,
@@ -400,10 +411,10 @@ export class FeishuClient {
         app_id: this.config.appId,
         app_secret: this.config.appSecret,
       },
-    } as any);
+    }) as unknown as FeishuApiResponse<TenantAccessTokenResponse> & TenantAccessTokenResponse;
 
     // lark SDK 返回的结构可能是 response.tenant_access_token 或者在 data 中
-    const token = (response as any).tenant_access_token || (response as any).data?.tenant_access_token;
+    const token = response.tenant_access_token || response.data?.tenant_access_token;
     if (!token) {
       throw new Error('获取 tenant_access_token 失败');
     }

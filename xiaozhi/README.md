@@ -1,36 +1,61 @@
 # 小智 (Xiaozhi) - AI 管家系统
 
-基于 Claude CLI 的智能管家系统，通过飞书提供对话接口，拥有 AI 专家团队处理特定类型任务，支持自我升级、定时任务和 Harness 工程最佳实践。
+基于 Claude CLI 的智能管家系统，通过飞书提供对话接口，拥有 AI 专家团队处理特定类型任务，支持自我升级、定时任务、Gateway 控制平面和插件系统。
+
+## 📚 文档
+
+- **[功能说明与部署指南](docs/GUIDE.md)** - 完整的功能模块说明、安装部署、配置和使用指南
+- **[API 参考](docs/GUIDE.md#api-参考)** - HTTP API 和 Gateway WebSocket API
+- **[故障排查](docs/GUIDE.md#故障排查)** - 常见问题和解决方案
 
 ## 架构概览
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          飞书用户                                │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ ① WebSocket 消息
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Node.js 服务进程                            │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │               ClaudeNativeAgent（小智）                   │   │
-│  │                     消息队列                               │   │
-│  │   [主人@飞书] → [专家:coder] → [专家:analyst] → ...       │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                             │                                  │
-│  ┌──────────────────────────┴──────────────────────────────┐   │
-│  │                  HTTP Server (:8081)                     │   │
-│  │   POST /api/experts/:name/call - 调用专家                │   │
-│  │   POST /api/callbacks/complete - 专家完成回调            │   │
-│  │   GET  /api/experts           - 专家列表                 │   │
-│  │   GET  /api/cron/tasks        - 定时任务列表             │   │
-│  │   POST /api/cron/tasks        - 创建定时任务             │   │
-│  │   POST /upgrade/start         - 开始升级                 │   │
-│  │   POST /upgrade/test          - 测试影子实例             │   │
-│  │   POST /upgrade/execute       - 执行升级                 │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           通信通道                                        │
+│  ┌─────────────┐              ┌─────────────┐                             │
+│  │   飞书用户   │              │  CLI 客户端  │                            │
+│  └──────┬──────┘              └──────┬──────┘                             │
+└─────────┼────────────────────────────┼────────────────────────────────────┘
+          │ ① WebSocket 消息            │ ② WebSocket 连接
+          ▼                             ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        Gateway 控制平面 (:18789)                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │  WebSocket Server                                                   │  │
+│  │  • chat - 与小智对话（CLI 无状态模式）                               │  │
+│  │  • session.list - 获取专家会话                                      │  │
+│  │  • plugin.list - 获取插件列表                                       │  │
+│  │  • channel.status - 获取通道状态                                    │  │
+│  │  • config.get - 获取系统配置                                        │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      Node.js 服务进程                                     │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │               ClaudeNativeAgent（小智）                             │  │
+│  │                     消息队列                                        │  │
+│  │   [主人@飞书] → [专家:coder] → [专家:analyst] → ...                 │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                             │                                            │
+│  ┌──────────────────────────┴───────────────────────────────────────┐   │
+│  │                  HTTP Server (:8081)                              │   │
+│  │   POST /api/experts/:name/call - 调用专家                         │   │
+│  │   POST /api/callbacks/complete - 专家完成回调                     │   │
+│  │   GET  /api/experts           - 专家列表                          │   │
+│  │   GET  /api/cron/tasks        - 定时任务列表                      │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │                  Plugin SDK (事件总线)                             │   │
+│  │   • 消息接收/发送事件                                              │   │
+│  │   • 会话开始/结束事件                                              │   │
+│  │   • 插件生命周期管理                                               │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────┘
         │                    ▲                    ▲
         │ 飞书回复            │ spawn             │ HTTP 回调
         ▼                    │                   │
@@ -39,6 +64,97 @@
 │                 │    │  coder    │    │  analyst     │
 └─────────────────┘    └───────────┘    └───────────────┘
 ```
+
+## 双通道架构
+
+小智支持两个通信通道，采用**主从模式**：
+
+| 通道 | 定位 | 会话模式 | 用途 |
+|------|------|---------|------|
+| **飞书** | 主通道 | 持久化上下文 | 日常对话、任务委托、长期记忆 |
+| **CLI** | 管理通道 | 无状态 | 状态查看、调试、紧急操作 |
+
+### 通道特性对比
+
+| 特性 | 飞书通道 | CLI 通道 |
+|-----|---------|---------|
+| 会话持久化 | ✅ `--continue` | ❌ 无状态 |
+| 上下文累积 | ✅ 是 | ❌ 否 |
+| 阻塞主会话 | ❌ 否 | ❌ 否 |
+| 全局记忆 | ✅ 共享 | ✅ 共享 |
+
+## Gateway 控制平面
+
+WebSocket 服务器，提供实时 API 和事件推送。
+
+### 端点
+
+| 端点 | 说明 |
+|------|------|
+| `ws://127.0.0.1:18789` | WebSocket 连接 |
+| `http://127.0.0.1:18789/health` | 健康检查 |
+
+### 内置方法
+
+| 方法 | 说明 |
+|------|------|
+| `ping` | 健康检查 |
+| `status` | 获取 Gateway 状态 |
+| `chat` | 与小智对话 |
+| `session.list` | 获取专家会话列表 |
+| `plugin.list` | 获取插件列表 |
+| `channel.status` | 获取通道状态 |
+| `config.get` | 获取系统配置 |
+
+### CLI 客户端
+
+```bash
+# 连接 Gateway
+node dist/cli/index.js
+
+# 可用命令
+/status    - 获取 Gateway 状态
+/sessions  - 获取专家会话列表
+/plugins   - 获取插件列表
+/channels  - 获取通道状态
+/config    - 获取系统配置
+/chat 消息 - 与小智对话
+/exit      - 退出 CLI
+```
+
+## 插件系统
+
+基于事件总线的插件架构，支持松耦合的扩展。
+
+### 事件类型
+
+```typescript
+enum EventTypes {
+  MESSAGE_RECEIVED = 'message:received',
+  MESSAGE_SENT = 'message:sent',
+  SESSION_STARTED = 'session:started',
+  SESSION_ENDED = 'session:ended',
+  PLUGIN_LOADED = 'plugin:loaded',
+  SYSTEM_START = 'system:start',
+}
+```
+
+### 插件接口
+
+```typescript
+interface IPlugin {
+  name: string;
+  version: string;
+  init(context: PluginContext): Promise<void>;
+  destroy(): Promise<void>;
+}
+```
+
+### 内置插件
+
+| 插件 | 说明 |
+|------|------|
+| `feishu` | 飞书消息通道插件 |
 
 ## AI 专家团队
 
@@ -49,50 +165,6 @@
 | **operator** | 系统运维、部署 | 重启服务、部署应用 |
 | **researcher** | 信息收集、调研 | 技术调研、文档整理 |
 
-## 自我升级系统
-
-小智可以安全地升级自己，流程如下：
-
-```
-1. 准备阶段（当前小智执行）
-   ├── Git 备份当前代码
-   ├── 修改代码
-   ├── Git commit 变更
-   └── 编译新版本
-
-2. 测试阶段
-   ├── 启动影子实例 (:8090)
-   ├── 发送测试消息
-   ├── 检查响应
-   └── 飞书通知测试结果
-
-3. 执行阶段（tmux 守护）
-   ├── tmux new -s tmux_upgradeXiaoZhi
-   ├── 停止服务
-   ├── 切换版本
-   ├── 启动服务
-   └── 健康检查
-
-4. 完成阶段（新版小智执行）
-   ├── 检查升级状态
-   ├── 飞书通知结果
-   └── 关闭 tmux 会话
-```
-
-### 升级 API
-
-| 路由 | 方法 | 说明 |
-|------|------|------|
-| `/upgrade/status` | GET | 获取升级状态 |
-| `/upgrade/start` | POST | 开始升级 |
-| `/upgrade/commit` | POST | 提交代码变更 |
-| `/upgrade/build` | POST | 编译代码 |
-| `/upgrade/test` | POST | 测试影子实例 |
-| `/upgrade/prepare` | POST | 准备升级 |
-| `/upgrade/execute` | POST | 执行升级 |
-| `/upgrade/abort` | POST | 放弃升级 |
-| `/upgrade/history` | GET | 升级历史 |
-
 ## 目录结构
 
 ```
@@ -101,15 +173,33 @@ xiaozhi/
 │   ├── index.ts                     # 主入口
 │   ├── core/
 │   │   └── claude-native-agent.ts   # 小智 Agent
+│   ├── gateway/                     # Gateway 控制平面
+│   │   ├── server.ts                # WebSocket 服务器
+│   │   └── types.ts                 # 类型定义
+│   ├── plugin-sdk/                  # 插件 SDK
+│   │   ├── event-bus.ts             # 事件总线
+│   │   ├── manager.ts               # 插件管理器
+│   │   └── types.ts                 # 类型定义
+│   ├── plugins/                     # 内置插件
+│   │   └── feishu/                  # 飞书插件
+│   ├── cli/                         # CLI 客户端
+│   │   ├── index.ts                 # CLI 入口
+│   │   └── gateway-cli.ts           # Gateway CLI 实现
 │   ├── expert/
 │   │   ├── manager.ts               # 专家管理器
 │   │   ├── executor.ts              # 专家执行器
 │   │   ├── session-manager.ts       # 会话管理
+│   │   ├── token-counter.ts         # Token 计数
+│   │   ├── context-pruning.ts       # 上下文裁剪
 │   │   ├── progress-tracker.ts      # 进度追踪 (Harness)
 │   │   └── feature-list.ts          # 功能清单 (Harness)
+│   ├── config/                      # 配置系统
+│   │   ├── index.ts                 # 配置导出
+│   │   ├── schema.ts                # 配置 Schema
+│   │   └── hot-reload.ts            # 热重载
 │   ├── file/                        # 文件处理模块
-│   │   ├── manager.ts               # 文件管理器（下载、存储）
-│   │   └── analyzer.ts              # 文件分析器（PDF/Word/Excel/图片）
+│   │   ├── manager.ts               # 文件管理器
+│   │   └── analyzer.ts              # 文件分析器
 │   ├── cron/
 │   │   ├── manager.ts               # 定时任务管理器
 │   │   └── types.ts                 # 类型定义
@@ -118,12 +208,6 @@ xiaozhi/
 │   │   ├── types.ts                 # 类型定义
 │   │   ├── card-builder.ts          # 富卡片构建器
 │   │   └── card-types.ts            # 卡片类型定义
-│   ├── upgrade/                     # 自我升级系统
-│   │   ├── types.ts                 # 类型定义
-│   │   ├── recorder.ts              # 升级记录
-│   │   ├── shadow.ts                # 影子实例
-│   │   ├── tester.ts                # 测试消息
-│   │   └── manager.ts               # 升级管理器
 │   ├── api/
 │   │   └── hooks-receiver.ts        # HTTP 接收器
 │   ├── monitor/
@@ -140,10 +224,7 @@ xiaozhi/
 │   ├── analyst/CLAUDE.md
 │   ├── operator/CLAUDE.md
 │   └── researcher/CLAUDE.md
-├── upgrades/                        # 升级记录
-│   └── 2026-02-25_001/
-│       ├── state.json               # 升级状态
-│       └── execute.sh               # 执行脚本
+├── workspace/                       # 小智工作目录
 ├── system-prompt.md                 # 小智提示词
 └── xiaozhi.db                       # 数据库
 ```
@@ -162,68 +243,42 @@ xiaozhi/
 | `/api/cron/tasks/:id/enable` | POST | 启用任务 |
 | `/api/cron/tasks/:id/disable` | POST | 禁用任务 |
 
-### 任务结构
-
-```typescript
-interface CronTask {
-  id: string;
-  description: string;     // 自然语言描述
-  cronExpr: string;        // cron 表达式 "0 6 * * *"
-  taskContent: string;     // 要执行的任务内容
-  chatId: string;          // 关联的飞书聊天 ID
-  enabled: boolean;
-  silent: boolean;         // 静默模式
-}
-```
-
 ## Harness 工程特性
 
 基于 OpenAI 和 Anthropic 的 Harness 工程最佳实践，提升长时运行 Agent 的可靠性。
 
 ### 进度追踪 (Progress Tracker)
 
-在每个工作目录维护 `.xiaozhi-progress.md` 文件，让新 Agent 能快速了解历史工作：
-
-- 记录每个任务的状态（开始/进行中/完成/失败）
-- 生成文件和下一步建议
-- 人类可读的 Markdown 格式
+在每个工作目录维护 `.xiaozhi-progress.md` 文件，让新 Agent 能快速了解历史工作。
 
 ### 功能清单 (Feature List)
 
-使用 `.xiaozhi-features.json` 定义"什么算完成"，防止 Agent 提前宣布任务完成：
+使用 `.xiaozhi-features.json` 定义"什么算完成"，防止 Agent 提前宣布任务完成。
 
-- 结构化的功能列表
-- 验证步骤和预期结果
-- 依赖关系管理
+### Token 计数
+
+实时估算上下文 Token 数量，支持多种模型：
+- Claude 系列
+- GPT 系列
+
+### 上下文裁剪
+
+基于优先级的消息保留策略：
+- 系统消息：最高优先级
+- 用户消息：高优先级
+- 助手消息：普通优先级
 
 ## HTTP API
 
 | 路由 | 方法 | 说明 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
-| `/queue` | GET | 队列状态 |
 | `/api/experts` | GET | 专家列表 |
 | `/api/experts/:name` | GET | 专家详情 |
 | `/api/experts/:name/call` | POST | 调用专家 |
-| `/api/experts/:name/sessions` | GET | 专家会话历史 |
 | `/api/callbacks/complete` | POST | 专家完成回调 |
 | `/api/sessions/:id` | GET | 会话状态 |
-| `/api/sessions/:id/stop` | POST | 停止会话 |
 | `/api/cron/tasks` | GET/POST | 定时任务管理 |
-| `/api/cron/tasks/:id` | DELETE | 删除定时任务 |
-
-## 技术特点
-
-1. **专家系统** - 不同专家处理不同类型任务，支持会话策略（--continue）
-2. **统一架构** - 小智和专家都用 `claude --print`
-3. **消息队列** - 飞书和专家消息排队处理
-4. **并行处理** - 小智不等待专家，专家完成后回调
-5. **自我升级** - 安全升级，测试通过才执行
-6. **tmux 守护** - 升级过程独立于服务进程
-7. **定时任务** - 支持 cron 表达式的定时任务管理
-8. **进度追踪** - Harness 工程最佳实践，跨会话状态追踪
-9. **内存监控** - 自动监控内存使用，超阈值告警
-10. **文件处理** - 支持飞书文件接收、智能分析和自然语言管理
 
 ## 文件处理功能
 
@@ -237,27 +292,6 @@ interface CronTask {
 | Word | .doc, .docx | 提取文本内容 |
 | Excel | .xls, .xlsx | 解析表格数据 |
 | 图片 | .png, .jpg, .gif, .webp | Claude Vision 多模态分析 |
-
-### 文件管理
-
-用户可以用自然语言管理文件：
-- "有什么文件" → 列出所有存储的文件
-- "删除那个 xxx 文档" → 删除指定文件
-- "清理一下旧文件" → 清理过期文件
-
-### 技术实现
-
-- **FileManager** (`src/file/manager.ts`): 文件下载、存储、元数据管理
-- **FileAnalyzer** (`src/file/analyzer.ts`): 多格式文件解析
-  - PDF: pdf-parse
-  - Word: mammoth
-  - Excel: xlsx (SheetJS)
-  - 图片: Claude Vision
-
-### 存储位置
-
-- 文件: `~/.xiaozhi/files/`
-- 元数据: SQLite `files` 表
 
 ## 服务管理
 
@@ -273,7 +307,7 @@ journalctl --user -u xiaozhi -f   # 日志
 - Node.js >= 18
 - SQLite3
 - Claude CLI
-- tmux（升级功能需要）
+- ws (WebSocket)
 - node-cron（定时任务）
 
 ## 许可证

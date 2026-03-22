@@ -35,6 +35,68 @@ const DEFAULT_CONFIG: Partial<GatewayConfig> = {
 };
 
 /**
+ * Chat 处理器类型
+ */
+export type ChatHandler = (message: string, clientId: string) => Promise<string>;
+
+/**
+ * 专家管理器接口（依赖注入）
+ */
+export interface ExpertManagerAdapter {
+  getExperts(): Array<{
+    id: string;
+    name: string;
+    description: string;
+    specialties: string[];
+    type: string;
+    stats?: { totalCalls: number; successCount: number; lastUsedAt?: Date };
+  }>;
+  getAllStatus(): Array<{
+    name: string;
+    status: 'idle' | 'busy' | 'queued' | 'error';
+    currentTask?: string;
+    lastActive?: Date;
+  }>;
+}
+
+/**
+ * 插件管理器接口（依赖注入）
+ */
+export interface PluginManagerAdapter {
+  getStats(): {
+    total: number;
+    loaded: number;
+    enabled: number;
+    error: number;
+  };
+  getPlugins(): Array<{
+    name: string;
+    version: string;
+    enabled: boolean;
+    status: string;
+  }>;
+}
+
+/**
+ * 配置管理器接口（依赖注入）
+ */
+export interface ConfigManagerAdapter {
+  getConfig(): Record<string, unknown>;
+}
+
+/**
+ * 通道状态接口（依赖注入）
+ */
+export interface ChannelStatusAdapter {
+  getChannels(): Array<{
+    name: string;
+    type: string;
+    connected: boolean;
+    lastActiveAt?: Date;
+  }>;
+}
+
+/**
  * Gateway 服务器
  *
  * WebSocket 控制平面，提供实时 API 和事件推送。
@@ -48,10 +110,57 @@ export class GatewayServer {
   private clientSockets: Map<string, WebSocket> = new Map();
   private startedAt: Date | null = null;
   private requestCounter: number = 0;
+  private chatHandler: ChatHandler | null = null;
+
+  // 依赖注入的管理器
+  private expertManager: ExpertManagerAdapter | null = null;
+  private pluginManager: PluginManagerAdapter | null = null;
+  private configManager: ConfigManagerAdapter | null = null;
+  private channelStatus: ChannelStatusAdapter | null = null;
 
   constructor(config: Partial<GatewayConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config } as Required<GatewayConfig>;
     this.registerBuiltinMethods();
+  }
+
+  /**
+   * 设置专家管理器
+   */
+  setExpertManager(manager: ExpertManagerAdapter): void {
+    this.expertManager = manager;
+    logger.debug('专家管理器已设置');
+  }
+
+  /**
+   * 设置插件管理器
+   */
+  setPluginManager(manager: PluginManagerAdapter): void {
+    this.pluginManager = manager;
+    logger.debug('插件管理器已设置');
+  }
+
+  /**
+   * 设置配置管理器
+   */
+  setConfigManager(manager: ConfigManagerAdapter): void {
+    this.configManager = manager;
+    logger.debug('配置管理器已设置');
+  }
+
+  /**
+   * 设置通道状态提供者
+   */
+  setChannelStatus(provider: ChannelStatusAdapter): void {
+    this.channelStatus = provider;
+    logger.debug('通道状态提供者已设置');
+  }
+
+  /**
+   * 设置 Chat 处理器
+   */
+  setChatHandler(handler: ChatHandler): void {
+    this.chatHandler = handler;
+    logger.info('Chat 处理器已设置');
   }
 
   /**
@@ -146,11 +255,18 @@ export class GatewayServer {
    * 获取状态
    */
   getStatus(): GatewayStatus {
+    // 从专家管理器获取活跃会话数
+    let activeSessions = 0;
+    if (this.expertManager) {
+      const statuses = this.expertManager.getAllStatus();
+      activeSessions = statuses.filter(s => s.status === 'busy').length;
+    }
+
     return {
       running: this.httpServer !== null,
       startedAt: this.startedAt || undefined,
       connections: this.clients.size,
-      activeSessions: 0, // TODO: 从会话管理器获取
+      activeSessions,
       uptime: this.startedAt ? Math.floor((Date.now() - this.startedAt.getTime()) / 1000) : undefined,
       version: '3.1.0',
     };
@@ -372,32 +488,116 @@ export class GatewayServer {
       handler: () => this.getStatus(),
     });
 
-    // 会话列表
+    // 会话列表（专家会话）
     this.registerMethod({
       name: BuiltinMethods.SESSION_LIST,
-      description: '获取会话列表',
-      handler: () => ({ sessions: [] }), // TODO: 实际实现
+      description: '获取专家会话列表',
+      handler: () => {
+        if (!this.expertManager) {
+          return { sessions: [], warning: '专家管理器未设置' };
+        }
+        const experts = this.expertManager.getExperts();
+        const statuses = this.expertManager.getAllStatus();
+        const sessions = experts.map(expert => {
+          const status = statuses.find(s => s.name === expert.name);
+          return {
+            name: expert.name,
+            description: expert.description,
+            specialties: expert.specialties,
+            type: expert.type,
+            status: status?.status || 'idle',
+            currentTask: status?.currentTask,
+            stats: expert.stats,
+          };
+        });
+        return { sessions, total: sessions.length };
+      },
     });
 
     // 配置获取
     this.registerMethod({
       name: BuiltinMethods.CONFIG_GET,
-      description: '获取配置',
-      handler: () => ({ config: {} }), // TODO: 实际实现
+      description: '获取系统配置',
+      handler: () => {
+        if (!this.configManager) {
+          return { config: {}, warning: '配置管理器未设置' };
+        }
+        const config = this.configManager.getConfig();
+        // 隐藏敏感信息
+        const safeConfig = { ...config };
+        if (safeConfig.security && typeof safeConfig.security === 'object') {
+          const sec = safeConfig.security as Record<string, unknown>;
+          if (sec.apiToken) {
+            sec.apiToken = '***hidden***';
+          }
+        }
+        return { config: safeConfig };
+      },
     });
 
     // 插件列表
     this.registerMethod({
       name: BuiltinMethods.PLUGIN_LIST,
       description: '获取插件列表',
-      handler: () => ({ plugins: [] }), // TODO: 实际实现
+      handler: () => {
+        if (!this.pluginManager) {
+          return { plugins: [], warning: '插件管理器未设置' };
+        }
+        const stats = this.pluginManager.getStats();
+        const plugins = this.pluginManager.getPlugins();
+        return {
+          plugins,
+          stats,
+        };
+      },
     });
 
     // 通道状态
     this.registerMethod({
       name: BuiltinMethods.CHANNEL_STATUS,
       description: '获取通道状态',
-      handler: () => ({ channels: [] }), // TODO: 实际实现
+      handler: () => {
+        if (!this.channelStatus) {
+          return { channels: [], warning: '通道状态提供者未设置' };
+        }
+        const channels = this.channelStatus.getChannels();
+        return { channels, total: channels.length };
+      },
+    });
+
+    // Chat - 与小智对话
+    this.registerMethod({
+      name: BuiltinMethods.CHAT,
+      description: '与小智对话',
+      handler: async (params: Record<string, unknown>, client: ClientConnection) => {
+        const message = params.message as string;
+        if (!message) {
+          throw new Error('message 参数不能为空');
+        }
+
+        if (!this.chatHandler) {
+          return {
+            success: false,
+            error: 'Chat 处理器未设置',
+            response: '抱歉，对话功能暂不可用。请检查服务配置。',
+          };
+        }
+
+        try {
+          const response = await this.chatHandler(message, client.id);
+          return {
+            success: true,
+            response,
+          };
+        } catch (error) {
+          logger.error('Chat 处理错误:', error);
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : '未知错误',
+            response: '抱歉，处理消息时发生错误。',
+          };
+        }
+      },
     });
   }
 

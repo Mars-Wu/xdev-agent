@@ -282,7 +282,22 @@ class ConfigManager {
     for (const source of sources) {
       for (const key of Object.keys(source) as Array<keyof XiaozhiConfig>) {
         if (source[key] !== undefined) {
-          result[key] = { ...result[key], ...source[key] } as any;
+          // 类型安全地合并嵌套对象
+          const sourceValue = source[key];
+          const defaultValue = result[key];
+          if (
+            sourceValue &&
+            typeof sourceValue === 'object' &&
+            defaultValue &&
+            typeof defaultValue === 'object'
+          ) {
+            (result as Record<string, unknown>)[key] = {
+              ...defaultValue,
+              ...sourceValue,
+            };
+          } else {
+            (result as Record<string, unknown>)[key] = sourceValue;
+          }
         }
       }
     }

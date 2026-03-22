@@ -121,7 +121,7 @@ export class XiaozhiCLI {
 
     console.log('');
     console.log('小智 CLI 客户端');
-    console.log('输入 /help 查看可用命令');
+    console.log('直接输入消息与小智对话，或输入 /help 查看可用命令');
     console.log('');
 
     this.rl.prompt();
@@ -168,8 +168,18 @@ export class XiaozhiCLI {
         console.log('输入 /help 查看可用命令');
       }
     } else {
-      // 发送消息
-      await this.sendMethod('message.send', { content: input });
+      // 直接与小智对话
+      console.log(`\n📤 发送: ${input}`);
+      console.log('⏳ 等待小智回复...');
+      const result = await this.sendMethod('chat', { message: input });
+      if (result && typeof result === 'object') {
+        const response = (result as { response?: string; success?: boolean; error?: string });
+        if (response.response) {
+          console.log(`\n📥 小智:\n${response.response}\n`);
+        } else if (response.error) {
+          console.log(`\n❌ 错误: ${response.error}\n`);
+        }
+      }
     }
   }
 
@@ -353,6 +363,32 @@ export class XiaozhiCLI {
       usage: '/quit',
       handler: async () => {
         await this.disconnect();
+      },
+    });
+
+    // Chat - 与小智对话
+    this.commands.set('chat', {
+      name: 'chat',
+      description: '与小智对话',
+      usage: '/chat <消息内容>',
+      handler: async (args: string[]) => {
+        if (args.length === 0) {
+          console.log('用法: /chat <消息内容>');
+          console.log('示例: /chat 你好，小智');
+          return;
+        }
+        const message = args.join(' ');
+        console.log(`\n📤 发送: ${message}`);
+        console.log('⏳ 等待小智回复...');
+        const result = await this.sendMethod('chat', { message });
+        if (result && typeof result === 'object') {
+          const response = (result as { response?: string; success?: boolean; error?: string });
+          if (response.response) {
+            console.log(`\n📥 小智:\n${response.response}\n`);
+          } else if (response.error) {
+            console.log(`\n❌ 错误: ${response.error}\n`);
+          }
+        }
       },
     });
   }

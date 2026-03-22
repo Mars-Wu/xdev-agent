@@ -165,6 +165,10 @@ export const BuiltinMethods = {
   STATUS: 'status',
   SHUTDOWN: 'shutdown',
 
+  // 对话
+  CHAT: 'chat',
+  CHAT_STREAM: 'chat.stream',
+
   // 会话
   SESSION_LIST: 'session.list',
   SESSION_GET: 'session.get',

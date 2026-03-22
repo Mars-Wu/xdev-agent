@@ -262,7 +262,7 @@ curl -X POST http://localhost:8081/api/cron/tasks/<任务Id>/trigger
 // ==================== 消息队列类型 ====================
 
 // 消息来源类型
-export type MessageSource = 'feishu' | 'worker' | 'expert';
+export type MessageSource = 'feishu' | 'worker' | 'expert' | 'gateway';
 
 // 队列满时的行为
 export type QueueFullBehavior = 'reject' | 'drop_oldest' | 'drop_newest';
@@ -921,6 +921,81 @@ export class ClaudeNativeAgent {
   }
 
   /**
+   * 处理来自 Gateway/CLI 的直接消息
+   * 直接处理消息并返回响应，使用队列避免并发问题
+   */
+  async processDirectMessage(content: string, clientId?: string): Promise<string> {
+    logger.info(`处理 Gateway 消息: ${content.slice(0, 50)}... (来自: ${clientId || 'unknown'})`);
+
+    // 创建 Gateway 消息并入队
+    const queueMsg: QueuedMessage = {
+      id: `gateway-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source: 'gateway',
+      content,
+      timestamp: new Date(),
+      retries: 0,
+    };
+
+    // 入队
+    const enqueueResult = this.enqueueMessage(queueMsg);
+    if (!enqueueResult.success) {
+      return `❌ ${enqueueResult.error || '系统繁忙，请稍后重试'}`;
+    }
+
+    // 等待处理完成
+    return new Promise((resolve) => {
+      // 设置超时（2分钟）
+      const timeout = setTimeout(() => {
+        resolve('❌ 请求超时，请稍后重试');
+      }, 120000);
+
+      // 监听处理完成
+      const checkInterval = setInterval(async () => {
+        if (!this.isProcessing && this.messageQueue.length === 0) {
+          // 消息已处理，获取响应
+          clearTimeout(timeout);
+          clearInterval(checkInterval);
+          resolve('✅ 消息已处理');
+        } else if (!this.messageQueue.find(m => m.id === queueMsg.id)) {
+          // 消息已从队列移除（已处理或被丢弃）
+          clearTimeout(timeout);
+          clearInterval(checkInterval);
+          resolve('✅ 消息已处理');
+        }
+      }, 500);
+    });
+  }
+
+  /**
+   * 处理来自 Gateway 的实时消息（同步等待响应）
+   * 使用无状态模式，不污染主会话上下文
+   * 用于 CLI/管理接口
+   */
+  async processGatewayMessage(content: string, clientId?: string): Promise<string> {
+    logger.info(`处理 Gateway 实时消息 (无状态): ${content.slice(0, 50)}... (来自: ${clientId || 'unknown'})`);
+
+    // Gateway 消息使用无状态模式，不阻塞主会话处理
+    const startTime = Date.now();
+
+    try {
+      // 添加来源前缀
+      const prefixedContent = `[CLI管理接口${clientId ? ':' + clientId.slice(0, 8) : ''}] ${content}`;
+
+      // 使用无状态调用，不影响主会话
+      const response = await this.callClaudeStateless(prefixedContent);
+
+      const elapsed = Date.now() - startTime;
+      logger.info(`Gateway 响应完成 (无状态)，耗时: ${elapsed}ms`);
+
+      return response;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('处理 Gateway 消息失败:', error);
+      return `❌ 处理失败: ${errorMessage.slice(0, 200)}`;
+    }
+  }
+
+  /**
    * 处理 /compact 命令
    */
   private async handleCompactCommand(msg: FeishuMessage): Promise<void> {
@@ -1489,6 +1564,100 @@ export class ClaudeNativeAgent {
   }
 
   /**
+   * 调用 Claude CLI（无状态模式）
+   * 不使用 --continue，每次调用都是独立会话
+   * 用于 CLI/管理接口，不污染主会话上下文
+   */
+  private async callClaudeStateless(userMessage: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const args = [
+        '--print',
+        '--verbose',
+        // 注意：不使用 --continue，实现无状态
+        '--output-format', 'stream-json',
+        '--model', this.model,
+        '--dangerously-skip-permissions',
+        '--add-dir', '/home/wxy',
+      ];
+
+      logger.info(`调用 Claude (无状态模式, 工作目录: ${PATHS.WORKSPACE})`);
+      logger.debug(`消息内容: ${userMessage.slice(0, 100)}...`);
+
+      const proc = spawn('claude', args, {
+        cwd: PATHS.WORKSPACE,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let responseText = '';
+      let errorText = '';
+      let isComplete = false;
+
+      // 超时处理
+      const timeoutId = setTimeout(() => {
+        if (!isComplete) {
+          logger.warn(`Claude 无状态调用超时 (${this.timeout}ms)`);
+          this.killProcessTree(proc);
+          if (responseText) {
+            resolve(responseText.trim() + '\n\n[注：响应超时，可能有截断]');
+          } else {
+            reject(new Error('Timeout'));
+          }
+        }
+      }, this.timeout);
+
+      proc.stdout.on('data', (data: Buffer) => {
+        const text = data.toString();
+        const lines = text.split('\n');
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          try {
+            const json = JSON.parse(line);
+            if (json.type === 'assistant' && json.message?.content) {
+              for (const block of json.message.content) {
+                if (block.type === 'text') {
+                  responseText += block.text;
+                }
+              }
+            }
+          } catch {
+            // 非 JSON 行，忽略
+          }
+        }
+      });
+
+      proc.stderr.on('data', (data: Buffer) => {
+        errorText += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        clearTimeout(timeoutId);
+        isComplete = true;
+
+        if (code === 0 && responseText) {
+          resolve(responseText.trim());
+        } else if (responseText) {
+          logger.warn(`Claude 退出码 ${code}，但有部分响应`);
+          resolve(responseText.trim());
+        } else {
+          reject(new Error(`Claude exited with code ${code}: ${errorText.slice(0, 200)}`));
+        }
+      });
+
+      proc.on('error', (error) => {
+        clearTimeout(timeoutId);
+        isComplete = true;
+        reject(error);
+      });
+
+      // 发送消息
+      proc.stdin.write(userMessage);
+      proc.stdin.end();
+    });
+  }
+
+  /**
    * 安全终止进程及其子进程
    * 使用 SIGTERM -> 等待 -> SIGKILL 的优雅关闭流程
    */
@@ -2052,8 +2221,9 @@ export class ClaudeNativeAgent {
             // 锁文件可能已被删除
           }
         };
-      } catch (error: any) {
-        if (error.code === 'EEXIST') {
+      } catch (error: unknown) {
+        const nodeError = error as NodeJS.ErrnoException;
+        if (nodeError.code === 'EEXIST') {
           // 文件已存在，继续等待
           if (Date.now() - startTime > timeout) {
             throw new Error(`获取锁超时: ${lockName}`);

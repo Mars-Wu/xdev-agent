@@ -181,11 +181,44 @@ async function main() {
     await agent.handleMessage(msg);
   });
 
-  // 12. 启动 Gateway
+  // 12. 设置 Gateway 依赖注入
+  gateway.setExpertManager({
+    getExperts: () => expertManager.getExperts(),
+    getAllStatus: () => expertManager.getAllStatus(),
+  });
+  gateway.setPluginManager({
+    getStats: () => pluginManager.getStats(),
+    getPlugins: () => {
+      // 返回简化的插件信息
+      const stats = pluginManager.getStats();
+      return [{
+        name: 'feishu',
+        version: '1.0.0',
+        enabled: true,
+        status: 'loaded',
+      }];
+    },
+  });
+  gateway.setConfigManager({
+    getConfig: () => configManager.getConfig() as unknown as Record<string, unknown>,
+  });
+  gateway.setChannelStatus({
+    getChannels: () => [{
+      name: 'feishu',
+      type: 'websocket',
+      connected: true, // 飞书连接状态，启动后为 true
+    }],
+  });
+  gateway.setChatHandler(async (message: string, clientId: string) => {
+    return await agent.processGatewayMessage(message, clientId);
+  });
+  logger.info('Gateway 依赖已设置');
+
+  // 13. 启动 Gateway
   await gateway.start();
   logger.info(`Gateway 已启动: ws://${GATEWAY_HOST}:${GATEWAY_PORT}`);
 
-  // 13. 启动核心服务
+  // 14. 启动核心服务
   await agent.start();
   await feishuClient.start();
 

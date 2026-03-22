@@ -54,3 +54,48 @@ export interface FeishuConfig {
   useWebSocket?: boolean;
   webhookPath?: string;
 }
+
+/**
+ * 飞书原始消息事件数据
+ */
+export interface FeishuRawEventData {
+  message: {
+    message_id: string;
+    chat_id: string;
+    create_time: string;
+    message_type: string;
+    content: string;
+  };
+}
+
+/**
+ * 飞书文件消息内容
+ */
+export interface FeishuFileContent {
+  file_key: string;
+  file_name: string;
+}
+
+/**
+ * 飞书图片消息内容
+ */
+export interface FeishuImageContent {
+  image_key: string;
+}
+
+/**
+ * 飞书 API 响应基础结构
+ */
+export interface FeishuApiResponse<T = unknown> {
+  code: number;
+  msg: string;
+  data?: T;
+}
+
+/**
+ * 租户访问令牌响应
+ */
+export interface TenantAccessTokenResponse {
+  tenant_access_token: string;
+  expire: number;
+}

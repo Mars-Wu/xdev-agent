@@ -189,13 +189,26 @@ export class FeishuClient {
     logger.info('WebSocket 客户端正在停止');
   }
 
+  // 飞书消息长度限制（字节）
+  private static readonly FEISHU_MSG_LIMIT = 28000; // 留 2KB 余量
+
   async sendMessage(chatId: string, reply: FeishuReply): Promise<void> {
     try {
+      const content = this.formatContent(reply);
+      const contentBytes = Buffer.byteLength(content, 'utf-8');
+
+      // 检查消息长度
+      if (contentBytes > FeishuClient.FEISHU_MSG_LIMIT && reply.type === 'text') {
+        // 文本消息超长，分段发送
+        await this.sendLongMessage(chatId, reply.content);
+        return;
+      }
+
       await this.client.im.message.create({
         params: { receive_id_type: 'chat_id' },
         data: {
           receive_id: chatId,
-          content: this.formatContent(reply),
+          content,
           msg_type: reply.type === 'interactive' ? 'interactive' : 'text',
         },
       });
@@ -203,6 +216,85 @@ export class FeishuClient {
       logger.error('发送消息失败:', error);
       throw error;
     }
+  }
+
+  /**
+   * 发送超长消息（分段）
+   */
+  private async sendLongMessage(chatId: string, content: string): Promise<void> {
+    const chunkSize = FeishuClient.FEISHU_MSG_LIMIT;
+    const chunks: string[] = [];
+
+    // 按段落分割，避免截断句子
+    const paragraphs = content.split('\n\n');
+    let currentChunk = '';
+
+    for (const para of paragraphs) {
+      if (Buffer.byteLength(currentChunk + para + '\n\n', 'utf-8') > chunkSize) {
+        if (currentChunk) {
+          chunks.push(currentChunk.trim());
+          currentChunk = '';
+        }
+        // 单个段落超长，强制分割
+        if (Buffer.byteLength(para, 'utf-8') > chunkSize) {
+          const forcedChunks = this.splitBySize(para, chunkSize);
+          chunks.push(...forcedChunks);
+        } else {
+          currentChunk = para + '\n\n';
+        }
+      } else {
+        currentChunk += para + '\n\n';
+      }
+    }
+    if (currentChunk.trim()) {
+      chunks.push(currentChunk.trim());
+    }
+
+    // 发送分段消息
+    const total = chunks.length;
+    for (let i = 0; i < chunks.length; i++) {
+      const prefix = total > 1 ? `【${i + 1}/${total}】\n\n` : '';
+      await this.client.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          content: JSON.stringify({ text: prefix + chunks[i] }),
+          msg_type: 'text',
+        },
+      });
+      // 分段发送间隔，避免频率限制
+      if (i < chunks.length - 1) {
+        await this.sleep(200);
+      }
+    }
+
+    logger.info(`超长消息已分段发送: ${total} 段`);
+  }
+
+  /**
+   * 按字节大小分割文本
+   */
+  private splitBySize(text: string, maxBytes: number): string[] {
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const char of text) {
+      if (Buffer.byteLength(current + char, 'utf-8') > maxBytes) {
+        chunks.push(current);
+        current = char;
+      } else {
+        current += char;
+      }
+    }
+    if (current) {
+      chunks.push(current);
+    }
+
+    return chunks;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async sendCard(chatId: string, card: MessageCard): Promise<void> {

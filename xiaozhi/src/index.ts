@@ -1,6 +1,6 @@
 // src/index.ts
 // AI管家小智 - 入口
-// 消息队列 + 统一专家系统 + Claude CLI 原生持久化
+// 架构: Gateway + 插件系统 + 专家系统 + Claude CLI
 
 import 'dotenv/config';
 import { FeishuClient } from './feishu/client';
@@ -11,11 +11,17 @@ import { CronManager } from './cron/manager';
 import { SQLiteStorage } from './storage/sqlite';
 import { MemoryMonitor } from './monitor/memory-monitor';
 import { createLogger } from './utils/logger';
-import { PATHS } from './config';
+import { PATHS, configManager } from './config';
+import { GatewayServer, createGatewayServer } from './gateway';
+import { PluginManager, createPluginManager, eventBus, EventTypes } from './plugin-sdk';
 import * as path from 'path';
 import * as os from 'os';
 
 const logger = createLogger('main');
+
+// Gateway 配置
+const GATEWAY_PORT = parseInt(process.env.XIAOZHI_GATEWAY_PORT || '18789');
+const GATEWAY_HOST = process.env.XIAOZHI_GATEWAY_HOST || '127.0.0.1';
 
 /**
  * 验证必需的环境变量
@@ -52,6 +58,16 @@ function validateConfig(): void {
     logger.warn('FEISHU_APP_ID 格式可能不正确（通常以 cli_ 开头）');
   }
 
+  // 验证配置 Schema
+  const validation = configManager.validate();
+  if (!validation.valid) {
+    logger.error('配置验证失败:');
+    for (const error of validation.errors) {
+      logger.error(`  - ${error}`);
+    }
+    process.exit(1);
+  }
+
   logger.info('配置验证通过');
 }
 
@@ -61,7 +77,7 @@ async function main() {
 
   logger.info('AI管家小智启动中...');
   logger.info('==========================================');
-  logger.info('架构: 消息队列 + 统一专家系统 + Claude CLI');
+  logger.info('架构: Gateway + 插件系统 + 专家系统 + Claude CLI');
   logger.info('==========================================');
 
   const xiaozhiHome = PATHS.XIAOZHI_HOME;
@@ -84,17 +100,24 @@ async function main() {
   logger.info(`  - 请求超时: ${config.timeout / 1000}s`);
   logger.info(`  - 最大重试: ${config.maxRetries} 次`);
 
-  // 1. 飞书客户端
-  const feishuClient = new FeishuClient({
-    appId: process.env.FEISHU_APP_ID!,
-    appSecret: process.env.FEISHU_APP_SECRET!,
-    useWebSocket: true,
-  });
-
-  // 2. 数据存储
+  // 1. 数据存储
   const storage = new SQLiteStorage(PATHS.DB_PATH);
 
-  // 3. 专家管理器（统一）
+  // 2. Gateway 服务器
+  const gateway = createGatewayServer({
+    host: GATEWAY_HOST,
+    port: GATEWAY_PORT,
+  });
+
+  // 3. 插件管理器
+  const pluginManager = createPluginManager({
+    pluginsDir: path.join(xiaozhiHome, 'plugins'),
+    autoLoad: true,
+  });
+  await pluginManager.initialize();
+  logger.info(`插件管理器已初始化`);
+
+  // 4. 专家管理器（统一）
   const expertManager = new ExpertManager(
     storage,
     PATHS.EXPERTS_DIR,
@@ -111,7 +134,7 @@ async function main() {
   await expertManager.initialize();
   logger.info(`专家管理器已初始化`);
 
-  // 4. Cron 定时任务管理器
+  // 5. Cron 定时任务管理器
   const cronManager = new CronManager(storage, {
     callbackUrl: `http://localhost:${hooksPort}/api/callbacks/complete`,
     maxTasks: 100,
@@ -120,16 +143,23 @@ async function main() {
   await cronManager.initialize();
   logger.info(`Cron 任务管理器已初始化`);
 
-  // 5. HTTP 接收器
+  // 6. HTTP 接收器
   const hooksReceiver = new HooksReceiver();
   hooksReceiver.listen(hooksPort);
   logger.info(`HTTP接收器已启动，端口 ${hooksPort}`);
 
-  // 5. 内存监控
+  // 7. 内存监控
   const memoryMonitor = new MemoryMonitor(`http://localhost:${hooksPort}/api/callbacks/complete`);
   memoryMonitor.start();
 
-  // 6. Claude Agent（小智）
+  // 8. 飞书客户端
+  const feishuClient = new FeishuClient({
+    appId: process.env.FEISHU_APP_ID!,
+    appSecret: process.env.FEISHU_APP_SECRET!,
+    useWebSocket: true,
+  });
+
+  // 9. Claude Agent（小智）
   const agent = new ClaudeNativeAgent({
     feishuClient,
     model: process.env.XIAOZHI_MODEL,
@@ -140,28 +170,53 @@ async function main() {
     autoCompact: config.autoCompact,
   });
 
-  // 7. 关联组件
+  // 10. 关联组件
   hooksReceiver.setAgent(agent);
   hooksReceiver.setExpertManager(expertManager);
   hooksReceiver.setCronManager(cronManager);
   logger.info('组件已关联');
 
-  // 8. 消息处理
+  // 11. 消息处理
   feishuClient.setMessageHandler(async (msg) => {
     await agent.handleMessage(msg);
   });
 
-  // 9. 启动
+  // 12. 启动 Gateway
+  await gateway.start();
+  logger.info(`Gateway 已启动: ws://${GATEWAY_HOST}:${GATEWAY_PORT}`);
+
+  // 13. 启动核心服务
   await agent.start();
   await feishuClient.start();
 
-  // 显示专家列表
+  // 注册事件监听
+  eventBus.on(EventTypes.MESSAGE_RECEIVED, (data) => {
+    gateway.broadcast({
+      type: 'message:received',
+      data,
+      timestamp: Date.now(),
+    });
+  });
+
+  eventBus.on(EventTypes.SESSION_STARTED, (data) => {
+    gateway.broadcast({
+      type: 'session:started',
+      data,
+      timestamp: Date.now(),
+    });
+  });
+
+  // 显示启动信息
   const experts = expertManager.getExperts();
+  const pluginStats = pluginManager.getStats();
+
   logger.info('==========================================');
   logger.info('可用专家:');
   for (const e of experts) {
     logger.info(`  - ${e.name}: ${e.description}`);
   }
+  logger.info(`插件: ${pluginStats.total} 个已加载`);
+  logger.info('==========================================');
   logger.info('可用命令:');
   logger.info('  /compact  - 压缩会话上下文');
   logger.info('  /stats    - 查看会话统计');
@@ -176,17 +231,32 @@ async function main() {
   logger.info(`  - GET  /api/cron/tasks       - 获取定时任务列表`);
   logger.info(`  - POST /api/cron/tasks       - 创建定时任务`);
   logger.info('==========================================');
+  logger.info('Gateway 端点:');
+  logger.info(`  - WebSocket: ws://${GATEWAY_HOST}:${GATEWAY_PORT}`);
+  logger.info(`  - Health:    http://${GATEWAY_HOST}:${GATEWAY_PORT}/health`);
+  logger.info('==========================================');
   logger.info('AI管家小智已就绪');
 
   // 优雅关闭
   const shutdown = async (signal: string) => {
     logger.info(`收到${signal}，正在关闭...`);
+
+    // 1. 停止接收新消息
+    await feishuClient.stop();
+    await agent.stop();
+
+    // 2. 关闭 Gateway
+    await gateway.stop();
+
+    // 3. 关闭插件
+    await pluginManager.shutdown();
+
+    // 4. 关闭其他组件
     memoryMonitor.stop();
     cronManager.stop();
     hooksReceiver.close();
-    await agent.stop();
-    await feishuClient.stop();
     storage.close();
+
     logger.info('AI管家小智已停止');
     process.exit(0);
   };

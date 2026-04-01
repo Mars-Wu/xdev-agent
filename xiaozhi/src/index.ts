@@ -86,10 +86,13 @@ async function main() {
   logger.info(`xiaozhiHome: ${xiaozhiHome}`);
   logger.info(`os.homedir(): ${os.homedir()}`);
 
-  // 配置参数
+  // 配置参数 - 使用统一的配置管理器
+  const xiaozhiConfig = configManager.getConfig();
+
   const config = {
     compactThreshold: parseInt(process.env.XIAOZHI_COMPACT_THRESHOLD || '') || 5 * 1024 * 1024,
-    timeout: parseInt(process.env.XIAOZHI_TIMEOUT || '') || 120000,
+    // 优先使用 API_TIMEOUT_MS (Claude settings), 然后是 XIAOZHI_TIMEOUT, 最后是配置文件
+    timeout: parseInt(process.env.API_TIMEOUT_MS || process.env.XIAOZHI_TIMEOUT || '') || xiaozhiConfig.timeout?.apiTimeout || 300000,
     maxRetries: parseInt(process.env.XIAOZHI_MAX_RETRIES || '') || 3,
     retryDelay: parseInt(process.env.XIAOZHI_RETRY_DELAY || '') || 1000,
     autoCompact: process.env.XIAOZHI_AUTO_COMPACT === 'true',

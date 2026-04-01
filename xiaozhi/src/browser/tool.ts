@@ -2,7 +2,7 @@
 // 浏览器自动化工具
 // 基于 Playwright，支持 headless 模式运行
 
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, Browser, Page, BrowserContext } from 'playwright';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createLogger } from '../utils/logger';
@@ -13,6 +13,11 @@ const logger = createLogger('browser');
  * 截图保存目录
  */
 const SCREENSHOT_DIR = path.join(process.env.HOME || '/home/wxy', 'data/tmp');
+
+/**
+ * 会话状态保存目录
+ */
+const SESSION_DIR = path.join(process.env.HOME || '/home/wxy', '.xiaozhi/browser-sessions');
 
 /**
  * 浏览器操作结果
@@ -89,10 +94,26 @@ export interface BrowserToolConfig {
 }
 
 /**
+ * 会话状态（cookies + localStorage）
+ */
+export interface SessionState {
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+  }>;
+  localStorage?: Record<string, string>;
+  url: string;
+  savedAt: string;
+}
+
+/**
  * 浏览器自动化工具
  */
 export class BrowserTool {
   private browser: Browser | null = null;
+  private persistentContext: BrowserContext | null = null;
   private config: Required<BrowserToolConfig>;
 
   constructor(config: BrowserToolConfig = {}) {
@@ -373,9 +394,238 @@ export class BrowserTool {
   }
 
   /**
+   * 登录流程（支持会话保持）
+   * 执行登录操作后，可以选择保存会话状态
+   */
+  async login(
+    url: string,
+    actions: Array<{
+      type: 'click' | 'fill' | 'select' | 'wait' | 'press';
+      selector: string;
+      value?: string;
+    }>,
+    options: {
+      screenshot?: boolean;
+      saveSession?: boolean;
+      sessionName?: string;
+      verifySelector?: string; // 登录成功后的验证元素
+    } = {}
+  ): Promise<BrowserResult & { sessionName?: string }> {
+    // 创建持久化上下文
+    if (!this.persistentContext) {
+      const browser = await this.initBrowser();
+      this.persistentContext = await browser.newContext({
+        viewport: this.config.viewport,
+      });
+    }
+
+    const page = await this.persistentContext.newPage();
+
+    try {
+      logger.info(`开始登录流程: ${url}`);
+      await page.goto(url, { waitUntil: 'networkidle', timeout: this.config.timeout });
+
+      // 执行登录操作
+      for (const action of actions) {
+        switch (action.type) {
+          case 'click':
+            await page.click(action.selector);
+            break;
+          case 'fill':
+            await page.fill(action.selector, action.value || '');
+            break;
+          case 'select':
+            await page.selectOption(action.selector, action.value || '');
+            break;
+          case 'wait':
+            await page.waitForSelector(action.selector, { timeout: 10000 });
+            break;
+          case 'press':
+            await page.press(action.selector, action.value || 'Enter');
+            break;
+        }
+        await page.waitForTimeout(500);
+      }
+
+      // 等待登录完成
+      if (options.verifySelector) {
+        await page.waitForSelector(options.verifySelector, { timeout: 15000 });
+      } else {
+        await page.waitForTimeout(2000); // 默认等待2秒
+      }
+
+      const pageData = await this.extractPageData(page);
+
+      // 保存会话
+      let sessionName: string | undefined;
+      if (options.saveSession) {
+        sessionName = options.sessionName || this.generateSessionName(url);
+        await this.saveSession(sessionName, this.persistentContext, page.url());
+      }
+
+      let screenshotPath: string | undefined;
+      if (options.screenshot) {
+        screenshotPath = await this.takeScreenshot(page, false);
+      }
+
+      await page.close();
+
+      return {
+        success: true,
+        data: { ...pageData, screenshot: screenshotPath },
+        sessionName,
+      };
+    } catch (error) {
+      await page.close();
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * 使用已保存的会话访问页面
+   */
+  async visitWithSession(
+    sessionName: string,
+    url: string,
+    options: { screenshot?: boolean; fullPage?: boolean } = {}
+  ): Promise<BrowserResult> {
+    try {
+      // 加载会话
+      const session = await this.loadSession(sessionName);
+      if (!session) {
+        return { success: false, error: `会话不存在: ${sessionName}` };
+      }
+
+      // 创建带会话状态的上下文
+      const browser = await this.initBrowser();
+      const context = await browser.newContext({
+        viewport: this.config.viewport,
+      });
+
+      // 恢复 cookies
+      await context.addCookies(session.cookies);
+
+      const page = await context.newPage();
+      await page.goto(url, { waitUntil: 'networkidle', timeout: this.config.timeout });
+
+      const pageData = await this.extractPageData(page);
+
+      let screenshotPath: string | undefined;
+      if (options.screenshot) {
+        screenshotPath = await this.takeScreenshot(page, options.fullPage ?? false);
+      }
+
+      await context.close();
+
+      return {
+        success: true,
+        data: { ...pageData, screenshot: screenshotPath },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * 保存会话状态
+   */
+  private async saveSession(name: string, context: BrowserContext, url: string): Promise<void> {
+    await fs.mkdir(SESSION_DIR, { recursive: true });
+
+    const cookies = await context.cookies();
+    const sessionState: SessionState = {
+      cookies: cookies.map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+      })),
+      url,
+      savedAt: new Date().toISOString(),
+    };
+
+    const filepath = path.join(SESSION_DIR, `${name}.json`);
+    await fs.writeFile(filepath, JSON.stringify(sessionState, null, 2));
+
+    logger.info(`会话已保存: ${name}`);
+  }
+
+  /**
+   * 加载会话状态
+   */
+  private async loadSession(name: string): Promise<SessionState | null> {
+    const filepath = path.join(SESSION_DIR, `${name}.json`);
+
+    try {
+      const content = await fs.readFile(filepath, 'utf-8');
+      return JSON.parse(content) as SessionState;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 列出已保存的会话
+   */
+  async listSessions(): Promise<Array<{ name: string; url: string; savedAt: string }>> {
+    await fs.mkdir(SESSION_DIR, { recursive: true });
+
+    const files = await fs.readdir(SESSION_DIR);
+    const sessions: Array<{ name: string; url: string; savedAt: string }> = [];
+
+    for (const file of files) {
+      if (file.endsWith('.json')) {
+        const content = await fs.readFile(path.join(SESSION_DIR, file), 'utf-8');
+        const session = JSON.parse(content) as SessionState;
+        sessions.push({
+          name: file.replace('.json', ''),
+          url: session.url,
+          savedAt: session.savedAt,
+        });
+      }
+    }
+
+    return sessions;
+  }
+
+  /**
+   * 删除会话
+   */
+  async deleteSession(name: string): Promise<boolean> {
+    const filepath = path.join(SESSION_DIR, `${name}.json`);
+
+    try {
+      await fs.unlink(filepath);
+      logger.info(`会话已删除: ${name}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 生成会话名称
+   */
+  private generateSessionName(url: string): string {
+    const hostname = new URL(url).hostname.replace(/\./g, '-');
+    const timestamp = new Date().toISOString().slice(0, 10);
+    return `${hostname}-${timestamp}`;
+  }
+
+  /**
    * 关闭浏览器
    */
   async close(): Promise<void> {
+    if (this.persistentContext) {
+      await this.persistentContext.close();
+      this.persistentContext = null;
+    }
     if (this.browser) {
       await this.browser.close();
       this.browser = null;

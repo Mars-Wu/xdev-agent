@@ -12,7 +12,7 @@ async function main() {
   const browser = createBrowserTool();
 
   try {
-    let result: BrowserResult;
+    let result: BrowserResult | object;
 
     switch (command) {
       case 'visit': {
@@ -69,6 +69,62 @@ async function main() {
         return;
       }
 
+      case 'login': {
+        const url = args[1];
+        const actionsJson = args[2];
+        const sessionName = args[3];
+
+        if (!url || !actionsJson) {
+          console.error('用法: node cli.js login <url> <actions-json> [session-name]');
+          console.error('  actions-json: JSON数组，如 \'[{"type":"fill","selector":"#user","value":"admin"}]\'');
+          process.exit(1);
+        }
+
+        const actions = JSON.parse(actionsJson);
+        const saveSession = !!sessionName;
+
+        result = await browser.login(url, actions, {
+          saveSession,
+          sessionName,
+          screenshot: args.includes('--screenshot'),
+        });
+        break;
+      }
+
+      case 'visit-session': {
+        const sessionName = args[1];
+        const url = args[2];
+
+        if (!sessionName || !url) {
+          console.error('用法: node cli.js visit-session <session-name> <url> [--screenshot]');
+          process.exit(1);
+        }
+
+        result = await browser.visitWithSession(sessionName, url, {
+          screenshot: args.includes('--screenshot'),
+        });
+        break;
+      }
+
+      case 'sessions': {
+        const sessions = await browser.listSessions();
+        console.log(JSON.stringify(sessions, null, 2));
+        await browser.close();
+        return;
+      }
+
+      case 'delete-session': {
+        const sessionName = args[1];
+        if (!sessionName) {
+          console.error('用法: node cli.js delete-session <session-name>');
+          process.exit(1);
+        }
+        const deleted = await browser.deleteSession(sessionName);
+        console.log(JSON.stringify({ success: deleted, sessionName }));
+        await browser.close();
+        return;
+      }
+
       case 'help':
       default:
         console.log(`
@@ -90,12 +146,26 @@ async function main() {
 
   check <url> <selector>   检查元素是否存在
 
+  login <url> <actions> [session-name]  登录并保存会话
+    --screenshot           保存截图
+    actions: JSON数组
+      [{"type":"fill","selector":"#user","value":"admin"},
+       {"type":"fill","selector":"#pass","value":"pwd"},
+       {"type":"click","selector":"button.login"}]
+
+  visit-session <session-name> <url>  使用已保存会话访问页面
+    --screenshot           保存截图
+
+  sessions                 列出已保存的会话
+
+  delete-session <name>    删除会话
+
 示例:
   node cli.js visit https://example.com
   node cli.js visit https://example.com --screenshot
-  node cli.js click https://example.com "button.submit"
-  node cli.js fill https://example.com "#search" "hello world"
-  node cli.js check https://example.com "h1.title"
+  node cli.js login https://erp.cicishop.cc '[{"type":"fill","selector":"#username","value":"admin"},{"type":"fill","selector":"#password","value":"pwd123"},{"type":"click","selector":"button[type=submit]"}]' erp-cicishop
+  node cli.js visit-session erp-cicishop https://erp.cicishop.cc/dashboard
+  node cli.js sessions
 `);
         await browser.close();
         return;

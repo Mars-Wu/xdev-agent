@@ -1,6 +1,6 @@
 // src/config.ts
-// 统一配置管理 - 所有配置优先从 ~/.claude/settings.json 读取
-// 支持环境变量覆盖，提供配置验证
+// 统一配置管理 - 小智独立配置，不再依赖 Claude CLI
+// 配置目录: ~/.xiaozhi/
 
 import * as path from 'path';
 import * as os from 'os';
@@ -84,6 +84,30 @@ export interface SessionContextConfig {
 }
 
 /**
+ * 语言偏好配置
+ */
+export interface LanguageConfig {
+  // 默认语言
+  default: '中文' | 'English' | '日本語';
+  // 强制使用默认语言
+  enforce: boolean;
+}
+
+/**
+ * 记忆系统配置
+ */
+export interface MemoryConfig {
+  // 是否启用记忆
+  enabled: boolean;
+  // 最大记忆条目数
+  maxEntries: number;
+  // 最大文件大小（字节）
+  maxFileSize: number;
+  // 相关性阈值（0-1）
+  relevanceThreshold: number;
+}
+
+/**
  * 完整配置
  */
 export interface XiaozhiConfig {
@@ -94,6 +118,8 @@ export interface XiaozhiConfig {
   security: SecurityConfig;
   log: LogConfig;
   sessionContext: SessionContextConfig;
+  language: LanguageConfig;
+  memory: MemoryConfig;
 }
 
 // ==================== 默认配置 ====================
@@ -132,68 +158,67 @@ const DEFAULT_CONFIG: XiaozhiConfig = {
   sessionContext: {
     autoCompact: true,
     compactThreshold: 0.15,        // 剩余 15% 时触发压缩
-    maxContextTokens: 128000,      // Claude 3.5 Sonnet 上下文窗口
+    maxContextTokens: 200000,      // GLM-5 上下文窗口
     preserveRecent: 10,            // 保留最近 10 条消息
     compactStrategy: 'priority',   // 优先级策略
+  },
+  language: {
+    default: '中文',
+    enforce: true,
+  },
+  memory: {
+    enabled: true,
+    maxEntries: 100,
+    maxFileSize: 25 * 1024,        // 25KB
+    relevanceThreshold: 0.5,
   },
 };
 
 // ==================== 配置管理类 ====================
 
+/**
+ * 小智配置文件路径
+ */
+const XIAOZHI_CONFIG_FILE = path.join(os.homedir(), '.xiaozhi', 'config.json');
+
 class ConfigManager {
   private config: XiaozhiConfig;
-  private claudeSettingsPath: string;
   private configValidated: boolean = false;
 
   constructor() {
-    this.claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     this.config = this.loadConfig();
   }
 
   /**
    * 加载配置（合并多个来源）
+   * 优先级：环境变量 > ~/.xiaozhi/config.json > 默认值
    */
   private loadConfig(): XiaozhiConfig {
-    // 1. 从 Claude settings 读取
-    const claudeSettings = this.readClaudeSettings();
+    // 1. 从小智配置文件读取
+    const fileConfig = this.readFileConfig();
 
     // 2. 从环境变量读取
     const envConfig = this.readEnvConfig();
 
-    // 3. 合并配置（优先级：环境变量 > Claude settings > 默认值）
-    const config = this.mergeConfig(DEFAULT_CONFIG, claudeSettings, envConfig);
+    // 3. 合并配置
+    const config = this.mergeConfig(DEFAULT_CONFIG, fileConfig, envConfig);
 
     logger.debug('配置加载完成');
     return config;
   }
 
   /**
-   * 读取 Claude settings 文件
+   * 读取小智配置文件
    */
-  private readClaudeSettings(): Partial<XiaozhiConfig> {
+  private readFileConfig(): Partial<XiaozhiConfig> {
     try {
-      const content = fs.readFileSync(this.claudeSettingsPath, 'utf-8');
-      const settings = JSON.parse(content);
-
-      const config: Partial<XiaozhiConfig> = {};
-
-      // 解析模型配置
-      if (settings.env) {
-        const env = settings.env as Record<string, unknown>;
-        if (env.ANTHROPIC_MODEL) {
-          config.model = { defaultModel: String(env.ANTHROPIC_MODEL) };
-        }
-        if (env.API_TIMEOUT_MS) {
-          config.timeout = {
-            ...DEFAULT_CONFIG.timeout,
-            apiTimeout: parseInt(String(env.API_TIMEOUT_MS), 10)
-          };
-        }
+      if (!fs.existsSync(XIAOZHI_CONFIG_FILE)) {
+        return {};
       }
-
-      return config;
+      const content = fs.readFileSync(XIAOZHI_CONFIG_FILE, 'utf-8');
+      return JSON.parse(content) as Partial<XiaozhiConfig>;
     } catch (error) {
-      logger.debug('读取 ~/.claude/settings.json 失败:', error);
+      logger.debug('读取 ~/.xiaozhi/config.json 失败:', error);
       return {};
     }
   }
@@ -395,36 +420,25 @@ class ConfigManager {
   }
 
   /**
+   * 获取语言配置
+   */
+  getLanguageConfig(): LanguageConfig {
+    return { ...this.config.language };
+  }
+
+  /**
+   * 获取记忆系统配置
+   */
+  getMemoryConfig(): MemoryConfig {
+    return { ...this.config.memory };
+  }
+
+  /**
    * 重新加载配置
    */
   reload(): void {
     this.config = this.loadConfig();
     logger.info('配置已重新加载');
-  }
-
-  /**
-   * 获取 Claude 环境配置（用于子进程）
-   */
-  getClaudeEnv(): Record<string, string> {
-    try {
-      const content = fs.readFileSync(this.claudeSettingsPath, 'utf-8');
-      const settings = JSON.parse(content);
-      const env: Record<string, string> = {};
-
-      if (settings.env && typeof settings.env === 'object') {
-        const settingsEnv = settings.env as Record<string, unknown>;
-        for (const [key, value] of Object.entries(settingsEnv)) {
-          if (typeof value === 'string' || typeof value === 'number') {
-            env[key] = String(value);
-          }
-        }
-      }
-
-      return env;
-    } catch (error) {
-      logger.debug('读取环境变量配置失败:', error);
-      return {};
-    }
   }
 }
 
@@ -445,13 +459,6 @@ export function getDefaultModel(): string {
  */
 export function getApiTimeout(): number {
   return configManager.getTimeoutConfig().apiTimeout;
-}
-
-/**
- * 获取所有 Claude 环境配置
- */
-export function getClaudeEnv(): Record<string, string> {
-  return configManager.getClaudeEnv();
 }
 
 // ==================== 路径配置 ====================
@@ -520,6 +527,55 @@ export function getXiaozhiProjectDir(): string {
 }
 
 /**
+ * 获取小智会话目录
+ */
+export function getXiaozhiSessionsDir(): string {
+  return path.join(getXiaozhiHome(), 'sessions');
+}
+
+/**
+ * 获取小智记忆目录
+ */
+export function getXiaozhiMemoryDir(): string {
+  return path.join(getXiaozhiHome(), 'memory');
+}
+
+/**
+ * 获取小智团队目录
+ */
+export function getXiaozhiTeamsDir(): string {
+  return path.join(getXiaozhiHome(), 'teams');
+}
+
+/**
+ * 获取小智缓存目录
+ */
+export function getXiaozhiCacheDir(): string {
+  return path.join(getXiaozhiHome(), 'cache');
+}
+
+/**
+ * 获取小智日志目录
+ */
+export function getXiaozhiLogsDir(): string {
+  return path.join(getXiaozhiHome(), 'logs');
+}
+
+/**
+ * 获取小智配置文件路径
+ */
+export function getXiaozhiConfigPath(): string {
+  return path.join(getXiaozhiHome(), 'config.json');
+}
+
+/**
+ * 获取模型能力缓存路径
+ */
+export function getModelCapabilitiesCachePath(): string {
+  return path.join(getXiaozhiCacheDir(), 'model-capabilities.json');
+}
+
+/**
  * 统一路径配置对象
  */
 export const PATHS = {
@@ -549,5 +605,27 @@ export const PATHS = {
   },
   get XIAOZHI_DIR() {
     return getXiaozhiProjectDir();
+  },
+  // 新增路径
+  get SESSIONS_DIR() {
+    return getXiaozhiSessionsDir();
+  },
+  get MEMORY_DIR() {
+    return getXiaozhiMemoryDir();
+  },
+  get TEAMS_DIR() {
+    return getXiaozhiTeamsDir();
+  },
+  get CACHE_DIR() {
+    return getXiaozhiCacheDir();
+  },
+  get LOGS_DIR() {
+    return getXiaozhiLogsDir();
+  },
+  get CONFIG_FILE() {
+    return getXiaozhiConfigPath();
+  },
+  get MODEL_CAPABILITIES_CACHE() {
+    return getModelCapabilitiesCachePath();
   },
 };

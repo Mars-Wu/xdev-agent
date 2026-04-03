@@ -58,6 +58,15 @@ export interface FormInfo {
 }
 
 /**
+ * 浏览器操作类型
+ */
+export interface BrowserAction {
+  type: 'click' | 'fill' | 'select' | 'wait' | 'press'
+  selector: string
+  value?: string
+}
+
+/**
  * 链接信息
  */
 export interface LinkInfo {

@@ -15,8 +15,8 @@ import {
   SessionStatus,
   ExpertRecord,
   SessionRecord as ExpertSessionRecord,
-} from '../expert/types';
-import { CronTaskRecord } from '../cron/types';
+  CronTaskRecord,
+} from './types';
 
 // ==================== 飞书会话记录（兼容旧版）====================
 

@@ -337,6 +337,9 @@ async function handleMessage(
       return;
     }
 
+    // 记录收到的消息
+    logger.info(`收到飞书消息: ${content.slice(0, 100)}${content.length > 100 ? '...' : ''}`);
+
     // 添加用户消息到历史
     historyManager.addMessage({
       role: 'user',
@@ -371,6 +374,10 @@ async function handleMessage(
 
       // 清除等待提示定时器
       clearTimeout(thinkingTimer);
+
+      // 记录 LLM 回复（截取前 200 字符）
+      const replyPreview = response.content.slice(0, 200);
+      logger.info(`LLM 回复: ${replyPreview}${response.content.length > 200 ? '...' : ''}`);
 
       // 添加助手回复到历史
       historyManager.addMessage({

@@ -12,7 +12,7 @@ const logger = createLogger('file-tools')
 
 const readToolDefinition = {
   name: 'read',
-  description: '读取文件内容。支持文本文件、图片、PDF 等多种格式。',
+  description: '读取文件内容（纯文本）。大文件可用 offset+limit 分页读取。\n优先于 bash cat 命令使用本工具。',
   parameters: {
     file_path: {
       type: 'string' as const,
@@ -99,7 +99,7 @@ export const readTool: Tool = {
 
 const writeToolDefinition = {
   name: 'write',
-  description: '写入文件。会覆盖已存在的文件。用于创建新文件或完全重写文件。',
+  description: '创建新文件或完全覆盖现有文件。\n只用于全量写入；部分修改请用 edit 工具。',
   parameters: {
     file_path: {
       type: 'string' as const,
@@ -170,8 +170,15 @@ export const writeTool: Tool = {
 
 const editToolDefinition = {
   name: 'edit',
-  description:
-    '编辑文件。使用字符串替换进行精确修改。old_string 必须唯一匹配文件中的一处内容。',
+  description: `精确替换文件中的一段内容。
+
+规则：
+- old_string 必须与文件中某一处内容完全一致（含空格/缩进）
+- old_string 在文件中必须唯一，若有多处相同请提供更多上下文
+- 与 write 的区别：edit 做局部修改，write 完全覆盖文件
+
+示例用途：
+- 修改函数实现、更新配置值、重命名变量`,
   parameters: {
     file_path: {
       type: 'string' as const,

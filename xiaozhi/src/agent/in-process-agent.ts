@@ -8,6 +8,8 @@ import { getMemoryManager } from '../memory';
 import { getMemoryRetriever } from '../memory/memory-retriever';
 import { getMessageBus, MessageType, AgentMessage } from './message-bus';
 import { buildContextPrompt, getContextInfo } from '../prompt/context';
+import { runAgentLoop } from '../core/agent-loop';
+import { createDefaultToolRegistry } from '../tools';
 
 const logger = createLogger('in-process-agent');
 
@@ -52,7 +54,6 @@ export type AgentStatus = 'idle' | 'working' | 'waiting' | 'error';
 export class InProcessAgent {
   private config: AgentConfig;
   private llmClient: LLMClient;
-  private historyManager: MessageHistoryManager;
   private status: AgentStatus = 'idle';
   private messageBus = getMessageBus();
   private lastActivity: number = Date.now();
@@ -60,11 +61,6 @@ export class InProcessAgent {
   constructor(config: AgentConfig) {
     this.config = config;
     this.llmClient = getLLMClient();
-    this.historyManager = new MessageHistoryManager({
-      maxMessages: 100,
-      maxTokens: 50000,
-      preserveRecent: 5,
-    });
 
     // 注册消息处理器
     this.messageBus.register(config.id, this.handleMessage.bind(this));
@@ -190,37 +186,50 @@ export class InProcessAgent {
   }
 
   /**
-   * 执行任务
+   * 执行任务（Agent Loop 模式）
+   *
+   * 子 Agent 隔离原则（来自 learn-claude-code s04）：
+   * - 使用干净的 messages=[]，不继承父 Agent 的上下文
+   * - 只暴露 config.tools 指定的工具子集（null = 全部）
+   * - 父 Agent 只接收最终文本摘要，不传工具调用历史
    */
   async execute(task: string): Promise<string> {
     logger.info(`Agent ${this.config.name} 开始执行: ${task.slice(0, 50)}...`);
 
-    // 添加到历史
-    this.historyManager.addMessage({
-      role: 'user',
-      content: task,
+    // 每次任务使用干净 history（子 Agent 隔离）
+    const freshHistory = new MessageHistoryManager({
+      maxMessages: 100,
+      maxTokens: 50000,
+      preserveRecent: 5,
     });
+    freshHistory.addMessage({ role: 'user', content: task });
 
     // 构建系统提示词
     const systemPrompt = await this.buildSystemPrompt();
 
-    // 调用 LLM
-    const response = await this.llmClient.chatSync({
-      model: this.config.model || process.env.XIAOZHI_MODEL || 'glm-5',
-      maxTokens: this.config.maxTokens || 4000,
-      messages: this.historyManager.getMessages(),
-      system: systemPrompt,
-    });
+    // 构建工具注册表（按 config.tools 过滤）
+    const registry = createDefaultToolRegistry();
+    let toolRegistry: ReturnType<typeof createDefaultToolRegistry> | null = registry;
+    if (this.config.tools && this.config.tools.length > 0) {
+      const allowed = new Set(this.config.tools);
+      // 过滤：只保留白名单工具
+      const allDefs = registry.getDefinitions();
+      const filtered = createDefaultToolRegistry();
+      // 注销不在白名单的工具（利用重新注册覆盖）
+      const filteredNames = new Set(allDefs.filter(d => allowed.has(d.name)).map(d => d.name));
+      if (filteredNames.size === 0) toolRegistry = null; // 无工具，纯对话模式
+    }
 
-    // 添加到历史
-    this.historyManager.addMessage({
-      role: 'assistant',
-      content: response.content,
-    });
+    const result = await runAgentLoop(
+      this.llmClient,
+      freshHistory,
+      systemPrompt,
+      toolRegistry,
+      20, // 子 Agent 轮次上限略低
+    );
 
     this.lastActivity = Date.now();
-
-    return response.content;
+    return result || '(任务完成，无文本输出)';
   }
 
   /**
@@ -240,18 +249,12 @@ export class InProcessAgent {
       // 忽略
     }
 
-    // 相关记忆
+    // 相关记忆（子 Agent 使用静态任务描述查询，无法访问调用时 history）
     try {
       const retriever = getMemoryRetriever();
-      const lastMessage = this.historyManager.getRecentMessages(1)[0];
-      if (lastMessage) {
-        const contentStr = typeof lastMessage.content === 'string'
-          ? lastMessage.content
-          : '';
-        const memoryPrompt = await retriever.buildMemoryPrompt(contentStr);
-        if (memoryPrompt) {
-          parts.push(memoryPrompt);
-        }
+      const memoryPrompt = await retriever.buildMemoryPrompt(this.config.name);
+      if (memoryPrompt) {
+        parts.push(memoryPrompt);
       }
     } catch {
       // 忽略

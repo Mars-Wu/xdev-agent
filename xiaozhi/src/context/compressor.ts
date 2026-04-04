@@ -603,6 +603,10 @@ ${content.slice(0, 10000)}
 
   /**
    * 构建压缩后的历史
+   *
+   * Identity 重注入（p1-identity-reinject）：
+   * 压缩后的 system 消息中嵌入当前 Agent 身份标记，
+   * 防止模型在长对话后"忘记"自己是小智。
    */
   private buildCompressedHistory(
     preserve: Message[],
@@ -611,18 +615,18 @@ ${content.slice(0, 10000)}
   ): Message[] {
     const result: Message[] = [];
 
-    // 1. 添加记忆上下文
-    if (memories) {
-      result.push({
-        role: 'system',
-        content: `## 历史上下文摘要\n\n${summary}\n\n${memories}`,
-      });
-    } else if (summary) {
-      result.push({
-        role: 'system',
-        content: `## 历史上下文摘要\n\n${summary}`,
-      });
-    }
+    // 身份锚点：始终重注入，防止压缩后丢失身份
+    const identityAnchor = `## Agent Identity\n你是小智，AI 管家助手。当前会话已被压缩以节省上下文空间。\n`;
+
+    const summaryBlock = summary
+      ? `## 历史上下文摘要\n\n${summary}`
+      : '';
+    const memoryBlock = memories ? `\n\n${memories}` : '';
+
+    result.push({
+      role: 'system',
+      content: `${identityAnchor}\n${summaryBlock}${memoryBlock}`,
+    });
 
     // 2. 添加保留的消息
     result.push(...preserve);

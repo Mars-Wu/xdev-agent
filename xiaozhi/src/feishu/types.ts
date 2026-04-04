@@ -32,7 +32,7 @@ export interface DownloadedFile {
 
 export interface FeishuReply {
   content: string;
-  type: 'text' | 'markdown' | 'interactive';
+  type: 'text' | 'post' | 'markdown' | 'interactive';
   card?: MessageCard;
 }
 

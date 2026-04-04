@@ -15,8 +15,15 @@ const logger = createLogger('glob-tool')
  */
 const globToolDefinition = {
   name: 'glob',
-  description:
-    '快速文件模式匹配工具，支持 glob 模式如 "**/*.js" 或 "src/**/*.ts"。返回匹配的文件路径列表。',
+  description: `按名称模式查找文件路径（不搜索内容）。
+
+常用模式示例：
+  **/*.ts          所有 TypeScript 文件
+  src/**/*.test.ts 所有测试文件
+  *.{json,yaml}    当前目录的 json/yaml
+  **/index.ts      所有入口文件
+
+与 grep 的区别：glob 按文件名匹配，grep 按内容匹配。`,
   parameters: {
     pattern: {
       type: 'string' as const,

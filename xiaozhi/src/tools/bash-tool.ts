@@ -10,12 +10,50 @@ import { Tool, ToolContext, ToolResult, successResult, errorResult } from './too
 const logger = createLogger('bash-tool')
 const execAsync = promisify(exec)
 
+// p2-cmd-safety：结构性危险模式检测（参考 originClaw bashSecurity.ts）
+const BLOCKED_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
+  { pattern: /\$\{[^}]*@[PQE]/, message: '${var@P} 参数转换（可能构造注入命令）' },
+  { pattern: /eval\s+/, message: 'eval 执行' },
+  { pattern: /curl[^|]*\|\s*(ba?sh|sh)\b/i, message: '管道执行远程脚本' },
+  { pattern: /wget[^|]*\|\s*(ba?sh|sh)\b/i, message: '管道执行远程脚本' },
+  { pattern: /\/dev\/tcp\//i, message: '/dev/tcp 网络反弹' },
+  { pattern: /rm\s+-rf\s+\/(?:\s|$)/, message: 'rm -rf / 删除根目录' },
+  { pattern: /:\(\)\s*\{.*\}\s*;/, message: 'fork bomb' },
+]
+
+function validateCommand(cmd: string): { safe: boolean; reason?: string } {
+  for (const { pattern, message } of BLOCKED_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return { safe: false, reason: `检测到危险模式：${message}` }
+    }
+  }
+  return { safe: true }
+}
+
 /**
  * Bash 工具定义
  */
 const bashToolDefinition = {
   name: 'bash',
-  description: '执行 shell 命令。支持所有标准 bash 命令。使用时需注意安全性。',
+  description: `执行 shell 命令（bash）。
+
+适用场景：
+- 运行构建/测试命令（npm test、npm run build、git status）
+- 查询文件系统（ls、find、wc -l、du）
+- 安装依赖（npm install、pip install）
+- 管道组合（cat file | grep pattern）
+- 启动/停止服务（systemctl --user restart xxx）
+
+不适用（使用专用工具替代）：
+- 读取文件内容 → 使用 read 工具
+- 写入/修改文件 → 使用 write / edit 工具
+- 搜索文件内容 → 使用 grep 工具
+- 查找文件路径 → 使用 glob 工具
+
+注意：
+- 超时 120 秒后自动终止
+- 输出超过 50KB 会被截断
+- 禁止：eval、curl|bash、/dev/tcp、rm -rf /`,
   parameters: {
     command: {
       type: 'string' as const,
@@ -53,6 +91,13 @@ export const bashTool: Tool = {
 
     if (!command) {
       return errorResult('缺少 command 参数')
+    }
+
+    // p2-cmd-safety：安全检查
+    const safety = validateCommand(command)
+    if (!safety.safe) {
+      logger.warn(`命令被安全检查拒绝: ${safety.reason} | 命令: ${command.slice(0, 100)}`)
+      return errorResult(`命令被拒绝：${safety.reason}`)
     }
 
     try {

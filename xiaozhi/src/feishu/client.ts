@@ -15,6 +15,7 @@ import {
   FeishuApiResponse,
   TenantAccessTokenResponse,
 } from './types';
+import { markdownToPost } from './markdown-to-post';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('feishu');
@@ -209,7 +210,7 @@ export class FeishuClient {
         data: {
           receive_id: chatId,
           content,
-          msg_type: reply.type === 'interactive' ? 'interactive' : 'text',
+          msg_type: reply.type === 'interactive' ? 'interactive' : reply.type === 'post' ? 'post' : 'text',
         },
       });
     } catch (error) {
@@ -321,7 +322,7 @@ export class FeishuClient {
         },
         data: {
           content: this.formatContent(reply),
-          msg_type: reply.type === 'interactive' ? 'interactive' : 'text',
+          msg_type: reply.type === 'interactive' ? 'interactive' : reply.type === 'post' ? 'post' : 'text',
         },
       });
     } catch (error) {
@@ -451,6 +452,9 @@ export class FeishuClient {
   private formatContent(reply: FeishuReply): string {
     if (reply.type === 'interactive' && reply.card) {
       return JSON.stringify(reply.card);
+    }
+    if (reply.type === 'post') {
+      return JSON.stringify(markdownToPost(reply.content));
     }
     // 统一使用纯文本格式（飞书的 text 类型只接受 {text: "..."} 格式）
     return JSON.stringify({ text: reply.content });

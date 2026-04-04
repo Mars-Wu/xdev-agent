@@ -13,8 +13,15 @@ const logger = createLogger('grep-tool')
  */
 const grepToolDefinition = {
   name: 'grep',
-  description:
-    '使用 ripgrep 搜索文件内容。支持正则表达式，比 grep 更快更强大。',
+  description: `在文件内容中搜索文本（使用 ripgrep，比 bash grep 更快）。
+
+适用场景：
+- 查找函数/变量定义：grep "function handleMessage" src/
+- 查找所有调用方：grep "import.*LLMClient" --glob "*.ts"
+- 搜索配置项：grep "MAX_TURNS" .
+
+与 glob 的区别：grep 搜索文件内容，glob 匹配文件名。
+与 bash 的区别：优先用本工具替代 bash grep/rg 命令。`,
   parameters: {
     pattern: {
       type: 'string' as const,

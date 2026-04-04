@@ -20,11 +20,22 @@ export type AgentType = 'general-purpose' | 'explore' | 'plan'
  */
 export const agentToolDefinition: ToolDefinition = {
   name: 'agent',
-  description: `启动子 Agent 夡理复杂任务。 Agent 可以:
-- 搜索代码库
-- 分析文件
-- 执行多步骤任务
-- 并行处理独立任务`,
+  description: `启动子 Agent 处理需要多步骤或并行探索的复杂任务。
+
+何时使用子 Agent（而非直接工具调用）：
+- 任务需要 3 步以上的独立思考链（例：分析整个代码库后生成报告）
+- 任务可以并行拆分（例：同时探索 src/ 和 tests/ 目录）
+- 需要独立上下文，避免污染当前对话历史
+
+何时直接用工具（不要用 Agent）：
+- 单次文件读取/写入 → 直接用 read/write/edit
+- 单次命令执行 → 直接用 bash
+- 简单搜索 → 直接用 grep/glob
+
+prompt 参数要求：
+- 必须完整自洽，子 Agent 无法访问当前对话历史
+- 包含足够的上下文（路径、目标、约束条件）
+- 说明期望的输出格式`,
   parameters: {
     subagent_type: {
       type: 'string',

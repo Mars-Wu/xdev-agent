@@ -21,6 +21,8 @@ import {
 import { getPromptBuilder, MemoryItem } from './prompt';
 import { getMemoryManager, MemoryManager } from './memory';
 import { initializeSkillRegistry, getSkillRegistry } from './skills';
+import { createDefaultToolRegistry, ToolRegistry } from './tools';
+import { runAgentLoop, DEFAULT_MAX_TURNS } from './core/agent-loop';
 // session 模块已移除 - 使用记忆系统替代
 import * as path from 'path';
 import * as os from 'os';
@@ -35,6 +37,8 @@ const GATEWAY_HOST = process.env.XIAOZHI_GATEWAY_HOST || '127.0.0.1';
 // 消息长度限制（防止 DoS）
 const MAX_MESSAGE_LENGTH = parseInt(process.env.XIAOZHI_MAX_MESSAGE_LENGTH || '100000'); // 100KB 文本
 const MAX_MESSAGE_DISPLAY = 500; // 错误提示中显示的最大长度
+
+// Agent Loop 最大轮次由 XIAOZHI_MAX_TURNS 环境变量控制（默认 30），见 src/core/agent-loop.ts
 
 /**
  * 验证必需的环境变量
@@ -176,6 +180,10 @@ async function main() {
   const skillRegistry = getSkillRegistry();
   logger.info(`Skill 注册表已初始化，已加载 ${skillRegistry.size()} 个技能`);
 
+  // 4.6 工具注册表（为 Agent Loop 提供工具集）
+  const toolRegistry = createDefaultToolRegistry();
+  logger.info(`工具注册表已初始化，已加载 ${toolRegistry.getDefinitions().length} 个工具`);
+
   // 5. HTTP 接收器
   const hooksReceiver = new HooksReceiver();
   hooksReceiver.listen(hooksPort);
@@ -203,7 +211,7 @@ async function main() {
 
   // 9. 消息处理
   feishuClient.setMessageHandler(async (msg) => {
-    await handleMessage(msg, llmClient, feishuClient, historyManager, storage);
+    await handleMessage(msg, llmClient, feishuClient, historyManager, storage, toolRegistry);
   });
 
   // 10. 设置 Gateway 依赖注入
@@ -229,9 +237,7 @@ async function main() {
       connected: true,
     }],
   });
-  gateway.setChatHandler(async (message: string, clientId: string) => {
-    return await handleGatewayMessage(message, clientId, llmClient, historyManager);
-  });
+  // Chat 通道已废弃：请通过飞书直接与小智对话
   logger.info('Gateway 依赖已设置');
 
   // 11. 启动 Gateway
@@ -312,6 +318,7 @@ async function handleMessage(
   feishuClient: FeishuClient,
   historyManager: MessageHistoryManager,
   storage: SQLiteStorage,
+  toolRegistry: ToolRegistry,
 ): Promise<void> {
   try {
     const content = msg.content.trim();
@@ -364,34 +371,26 @@ async function handleMessage(
     }, THINKING_PROMPT_DELAY);
 
     try {
-      // 调用 LLM
-      const response = await llmClient.chatSync({
-        model: process.env.XIAOZHI_MODEL || 'glm-5',
-        maxTokens: 16000,
-        messages: historyManager.getMessages(),
-        system: systemPrompt,
-      });
+      // Agent Loop：带工具调用的完整循环
+      const replyText = await runAgentLoop(
+        llmClient,
+        historyManager,
+        systemPrompt,
+        toolRegistry,
+      );
 
       // 清除等待提示定时器
       clearTimeout(thinkingTimer);
 
       // 记录 LLM 回复（截取前 200 字符）
-      const replyPreview = response.content.slice(0, 200);
-      logger.info(`LLM 回复: ${replyPreview}${response.content.length > 200 ? '...' : ''}`);
+      const replyPreview = replyText.slice(0, 200);
+      logger.info(`Agent 回复: ${replyPreview}${replyText.length > 200 ? '...' : ''}`);
 
-      // 添加助手回复到历史
-      historyManager.addMessage({
-        role: 'assistant',
-        content: response.content,
-      });
-
-      // 发送回复
+      // 发送回复（historyManager 在 runAgentLoop 中已更新）
       await feishuClient.sendMessage(msg.chatId, {
-        content: response.content,
-        type: 'text',
+        content: replyText || '(任务完成)',
+        type: 'post',
       });
-
-      logger.info(`消息处理完成，使用 tokens: ${response.usage.inputTokens} + ${response.usage.outputTokens}`);
     } finally {
       // 确保定时器被清除
       clearTimeout(thinkingTimer);
@@ -402,37 +401,6 @@ async function handleMessage(
       content: `处理失败: ${error instanceof Error ? error.message : String(error)}`,
       type: 'text',
     }).catch(() => {});
-  }
-}
-
-/**
- * 处理 Gateway 消息
- */
-async function handleGatewayMessage(
-  message: string,
-  clientId: string,
-  llmClient: LLMClient,
-  historyManager: MessageHistoryManager,
-): Promise<string> {
-  try {
-    // 添加用户消息到历史
-    historyManager.addMessage({
-      role: 'user',
-      content: `[CLI:${clientId.slice(0, 8)}] ${message}`,
-    });
-
-    // 调用 LLM（无状态模式，使用独立历史）
-    const response = await llmClient.chatSync({
-      model: process.env.XIAOZHI_MODEL || 'glm-5',
-      maxTokens: 16000,
-      messages: historyManager.getRecentMessages(10),
-      system: '你是小智，一个智能助手。简洁友好地回答用户问题。',
-    });
-
-    return response.content;
-  } catch (error) {
-    logger.error('处理 Gateway 消息失败:', error);
-    return `处理失败: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -460,7 +428,24 @@ async function buildSystemPrompt(storage: SQLiteStorage): Promise<string> {
     // 记忆读取失败，使用基础提示词
   }
 
-  return builder.build({ includeMemory: true })
+  let prompt = builder.build({ includeMemory: true })
+
+  // p1-skill-lazy：动态注入已注册技能的名称+描述（两层懒加载 Layer 1）
+  // 只列出技能菜单，不注入完整 body；完整实现通过 use_skill 工具按需加载
+  try {
+    const skillRegistry = getSkillRegistry()
+    const skills = skillRegistry.list()
+    if (skills.length > 0) {
+      const menu = skills
+        .map(s => `  - ${s.name}${s.description ? ': ' + s.description : ''}`)
+        .join('\n')
+      prompt += `\n\n## 可用技能（通过 use_skill 工具调用）\n${menu}`
+    }
+  } catch {
+    // 技能注册表读取失败，忽略
+  }
+
+  return prompt
 }
 
 function formatBytes(bytes: number): string {

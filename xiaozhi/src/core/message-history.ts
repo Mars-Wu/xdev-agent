@@ -380,6 +380,34 @@ export class MessageHistoryManager {
   }
 
   /**
+   * 序列化为 JSON 字符串（用于话题 history 分桶持久化）
+   */
+  serialize(): string {
+    return this.export()
+  }
+
+  /**
+   * 从 JSON 字符串恢复 history（保留当前 config，只替换消息内容）
+   */
+  deserialize(json: string): void {
+    if (!json || json === '[]' || json.trim() === '') {
+      this.clear()
+      return
+    }
+    this.import(json)
+  }
+
+  /**
+   * 获取当前状态统计（消息数 + 估算 token 数）
+   */
+  stats(): { messageCount: number; estimatedTokens: number } {
+    return {
+      messageCount: this.getMessageCount(),
+      estimatedTokens: this.getTokenCount(),
+    }
+  }
+
+  /**
    * 导出历史
    */
   export(): string {

@@ -23,6 +23,10 @@ import { getMemoryManager, MemoryManager } from './memory';
 import { initializeSkillRegistry, getSkillRegistry } from './skills';
 import { createDefaultToolRegistry, ToolRegistry } from './tools';
 import { runAgentLoop, DEFAULT_MAX_TURNS } from './core/agent-loop';
+import { getTopicGraph } from './storage/topic-graph';
+import { routeAndAssemble } from './core/message-router';
+import { createTopicTools } from './tools/topic-tools';
+import { triggerBackgroundPass, buildExecutionSummary } from './core/background-memory';
 // session 模块已移除 - 使用记忆系统替代
 import * as path from 'path';
 import * as os from 'os';
@@ -200,7 +204,7 @@ async function main() {
     useWebSocket: true,
   });
 
-  // 8. 消息历史管理器
+  // 8. 消息历史管理器（全局 fallback，话题路由关闭时使用）
   const historyManager = new MessageHistoryManager({
     maxMessages: 1000,
     maxTokens: 180_000,
@@ -208,6 +212,13 @@ async function main() {
     enableCompression: true,
     compressionThreshold: 0.9,
   });
+
+  // 8.1 话题图（Phase 4 话题路由，按环境变量开关）
+  const topicRoutingEnabled = process.env.XIAOZHI_TOPIC_ROUTING === 'true';
+  if (topicRoutingEnabled) {
+    const topicGraph = getTopicGraph();
+    logger.info('话题路由已启用（XIAOZHI_TOPIC_ROUTING=true）');
+  }
 
   // 9. 消息处理
   feishuClient.setMessageHandler(async (msg) => {
@@ -347,19 +358,8 @@ async function handleMessage(
     // 记录收到的消息
     logger.info(`收到飞书消息: ${content.slice(0, 100)}${content.length > 100 ? '...' : ''}`);
 
-    // 添加用户消息到历史
-    historyManager.addMessage({
-      role: 'user',
-      content: `[主人@飞书] ${msg.content}`,
-    });
-
-    // 构建系统提示词
-    const systemPrompt = await buildSystemPrompt(storage);
-
     // 智能等待提示：只在响应较慢时才显示
-    let thinkingShown = false;
     const thinkingTimer = setTimeout(async () => {
-      thinkingShown = true;
       try {
         await feishuClient.sendMessage(msg.chatId, {
           content: '💭 正在思考...',
@@ -371,13 +371,90 @@ async function handleMessage(
     }, THINKING_PROMPT_DELAY);
 
     try {
-      // Agent Loop：带工具调用的完整循环
-      const replyText = await runAgentLoop(
-        llmClient,
-        historyManager,
-        systemPrompt,
-        toolRegistry,
-      );
+      const topicRoutingEnabled = process.env.XIAOZHI_TOPIC_ROUTING === 'true';
+
+      let replyText: string;
+
+      if (topicRoutingEnabled) {
+        // ── Phase 4：3 阶段话题路由流水线 ────────────────────────────────
+        const memoryManager = getMemoryManager();
+        await memoryManager.initialize();
+        const topicGraph = getTopicGraph();
+
+        // Stage 1：路由 + Context 组装
+        const context = await routeAndAssemble(
+          msg.content,
+          topicGraph,
+          llmClient,
+          memoryManager,
+        );
+
+        // 将用户消息追加到话题 history bucket
+        context.topicHistory.addMessage({
+          role: 'user',
+          content: `[主人@飞书] ${msg.content}`,
+        });
+
+        // 注册话题专属工具（save_memory / update_topic_summary）到主 registry
+        // 若已注册则先注销（下次不同话题时重新注册新 topicId 版本）
+        const topicTools = createTopicTools(memoryManager, topicGraph, context.topicId);
+        topicTools.forEach(t => {
+          toolRegistry.unregister(t.definition.name);
+          toolRegistry.register(t);
+        });
+
+        // 构建 system prompt（话题路由提供的 + 基础 prompt）
+        const basePrompt = await buildSystemPrompt(storage);
+        const systemPrompt = context.systemPrompt
+          ? `${basePrompt}\n\n${context.systemPrompt}`
+          : basePrompt;
+
+        // Stage 2：Agent Loop（使用话题 history bucket）
+        replyText = await runAgentLoop(
+          llmClient,
+          context.topicHistory,
+          systemPrompt,
+          toolRegistry,
+        );
+
+        // 保存话题 history bucket（持久化到磁盘）
+        topicGraph.saveHistory(context.topicId, context.topicHistory);
+        topicGraph.incrementTurnCount(context.topicId);
+
+        // 写 pipeline 日志
+        topicGraph.logPipeline({
+          ts: Date.now(),
+          msgPreview: content.slice(0, 50),
+          topicId: context.topicId,
+          isNewTopic: context.route.isNewTopic,
+          confidence: context.route.confidence,
+          historyStrategy: context.route.historyStrategy,
+          contextTokens: context.topicHistory.stats().estimatedTokens,
+        });
+
+        // Stage 3 之后：异步触发 Background Pass（不阻塞回复）
+        const executionSummary = buildExecutionSummary(context.topicHistory.getMessages());
+        triggerBackgroundPass(
+          { topicId: context.topicId, executionSummary },
+          llmClient, topicGraph, memoryManager,
+        );
+
+      } else {
+        // ── 原有全局 historyManager 流程（兜底）────────────────────────
+        historyManager.addMessage({
+          role: 'user',
+          content: `[主人@飞书] ${msg.content}`,
+        });
+
+        const systemPrompt = await buildSystemPrompt(storage);
+
+        replyText = await runAgentLoop(
+          llmClient,
+          historyManager,
+          systemPrompt,
+          toolRegistry,
+        );
+      }
 
       // 清除等待提示定时器
       clearTimeout(thinkingTimer);
@@ -386,7 +463,7 @@ async function handleMessage(
       const replyPreview = replyText.slice(0, 200);
       logger.info(`Agent 回复: ${replyPreview}${replyText.length > 200 ? '...' : ''}`);
 
-      // 发送回复（historyManager 在 runAgentLoop 中已更新）
+      // Stage 3：发送回复
       await feishuClient.sendMessage(msg.chatId, {
         content: replyText || '(任务完成)',
         type: 'post',

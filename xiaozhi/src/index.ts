@@ -376,63 +376,85 @@ async function handleMessage(
       let replyText: string;
 
       try {
-        // Stage 1：路由 + Context 组装
-        const context = await routeAndAssemble(
+        // Stage 1：路由 + Context 组装（返回数组，单话题长度=1）
+        const contexts = await routeAndAssemble(
           msg.content,
           topicGraph,
           llmClient,
           memoryManager,
         );
 
-        // 将用户消息追加到话题 history bucket
-        context.topicHistory.addMessage({
-          role: 'user',
-          content: `[主人@飞书] ${msg.content}`,
-        });
+        // Stage 2：对每个话题并行执行 Agent Loop
+        const subResponses = await Promise.all(
+          contexts.map(async (context) => {
+            try {
+              // 将子问题追加到话题 history bucket
+              context.topicHistory.addMessage({
+                role: 'user',
+                content: `[主人@飞书] ${context.subMessage}`,
+              });
 
-        // 注册话题专属工具（save_memory / update_topic_summary）到主 registry
-        // 若已注册则先注销（下次不同话题时重新注册新 topicId 版本）
-        const topicTools = createTopicTools(memoryManager, topicGraph, context.topicId);
-        topicTools.forEach(t => {
-          toolRegistry.unregister(t.definition.name);
-          toolRegistry.register(t);
-        });
+              // 注册话题专属工具（save_memory / update_topic_summary）
+              const topicTools = createTopicTools(memoryManager, topicGraph, context.topicId);
+              topicTools.forEach(t => {
+                toolRegistry.unregister(t.definition.name);
+                toolRegistry.register(t);
+              });
 
-        // 构建 system prompt（话题路由提供的 + 基础 prompt）
-        const basePrompt = await buildSystemPrompt(storage);
-        const systemPrompt = context.systemPrompt
-          ? `${basePrompt}\n\n${context.systemPrompt}`
-          : basePrompt;
+              // 构建 system prompt
+              const basePrompt = await buildSystemPrompt(storage);
+              const systemPrompt = context.systemPrompt
+                ? `${basePrompt}\n\n${context.systemPrompt}`
+                : basePrompt;
 
-        // Stage 2：Agent Loop（使用话题 history bucket）
-        replyText = await runAgentLoop(
-          llmClient,
-          context.topicHistory,
-          systemPrompt,
-          toolRegistry,
+              // Agent Loop（使用话题 history bucket）
+              const reply = await runAgentLoop(
+                llmClient,
+                context.topicHistory,
+                systemPrompt,
+                toolRegistry,
+              );
+
+              // 保存话题 history（持久化到磁盘）
+              topicGraph.saveHistory(context.topicId, context.topicHistory);
+              topicGraph.incrementTurnCount(context.topicId);
+
+              // 写 pipeline 日志
+              topicGraph.logPipeline({
+                ts: Date.now(),
+                msgPreview: context.subMessage.slice(0, 50),
+                topicId: context.topicId,
+                isNewTopic: context.route.isNewTopic,
+                confidence: context.route.confidence,
+                historyStrategy: context.route.historyStrategy,
+                contextTokens: context.topicHistory.stats().estimatedTokens,
+              });
+
+              // 异步触发 Background Pass（不阻塞回复）
+              const executionSummary = buildExecutionSummary(context.topicHistory.getMessages());
+              triggerBackgroundPass(
+                { topicId: context.topicId, executionSummary },
+                llmClient, topicGraph, memoryManager,
+              );
+
+              return { reply, error: null };
+            } catch (subErr) {
+              logger.warn(`话题 ${context.topicId} 处理失败:`, subErr);
+              return { reply: '', error: '该部分处理失败，请稍后重试' };
+            }
+          })
         );
 
-        // 保存话题 history bucket（持久化到磁盘）
-        topicGraph.saveHistory(context.topicId, context.topicHistory);
-        topicGraph.incrementTurnCount(context.topicId);
-
-        // 写 pipeline 日志
-        topicGraph.logPipeline({
-          ts: Date.now(),
-          msgPreview: content.slice(0, 50),
-          topicId: context.topicId,
-          isNewTopic: context.route.isNewTopic,
-          confidence: context.route.confidence,
-          historyStrategy: context.route.historyStrategy,
-          contextTokens: context.topicHistory.stats().estimatedTokens,
-        });
-
-        // Stage 3 之后：异步触发 Background Pass（不阻塞回复）
-        const executionSummary = buildExecutionSummary(context.topicHistory.getMessages());
-        triggerBackgroundPass(
-          { topicId: context.topicId, executionSummary },
-          llmClient, topicGraph, memoryManager,
-        );
+        // 合并回复（单话题直接返回，多话题用分隔线拼接）
+        if (subResponses.length === 1) {
+          const r = subResponses[0];
+          replyText = r.error ? r.error : (r.reply || '(任务完成)');
+        } else {
+          replyText = subResponses
+            .map(r => r.error ? `（${r.error}）` : r.reply)
+            .filter(Boolean)
+            .join('\n\n---\n\n') || '(任务完成)';
+        }
 
       } catch (routingErr) {
         // 话题路由失败时降级到全局 historyManager（服务不中断）

@@ -320,3 +320,114 @@ async function handleMessage(msg, llmClient, feishuClient, ...) {
 ---
 
 *文档版本：v2.0 | 更新日期：2026-04 | 简化为 3 阶段流水线，Stage 4 合并入 Stage 2 热路径工具，Stage 2 合并入 Stage 1*
+
+---
+
+## 九、单消息多话题处理（方案 B：并行子任务）
+
+### 问题
+
+一条飞书消息可能包含多个独立话题，例如：
+> "帮我看看 TqQuant 的 README，顺便把 xiaozhi 的日志级别改成 debug"
+
+原设计路由器只返回单个 `topicId`，只能选一个话题处理，另一个裸跑，导致：
+- 被放弃的话题缺失 history 上下文
+- 两件事的结果混存到同一个 bucket
+
+### 设计原则
+
+- **代码负责合并**，不引入第三个 LLM——合并只是有序拼接，不需要理解
+- **每个 Stage 2 相互不知道对方**，各自在独立 context 中运行，保持隔离
+- 单话题消息（绝大多数）走长度为 1 的数组，行为与之前完全一致
+
+### 数据流
+
+```
+用户消息（原始）
+       │
+       ▼
+  【Stage 1：路由器】
+  输出: SubRouteResult[]
+       │
+       ├─ routes.length === 1  →  原有路径（无性能开销）
+       └─ routes.length >= 2  →  并行执行
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+   【Stage 2-A】       【Stage 2-B】
+    话题 T1 context     话题 T2 context
+    subMessage A        subMessage B
+        │                   │
+        ▼                   ▼
+      回复A               回复B
+        │                   │
+        └─────────┬─────────┘
+                  ▼
+           【handleMessage 拼接】
+           回复A + "\n\n---\n\n" + 回复B
+                  │
+           保存 T1 history    保存 T2 history
+           （存 subMessageA） （存 subMessageB）
+```
+
+### Stage 1 输出结构变化
+
+```typescript
+// 路由器输出从单对象改为容器
+interface SubRouteResult {
+  topicId: string
+  isNewTopic: boolean
+  subMessage: string       // ← 新增：从原消息提炼的独立子问题（自含上下文）
+  historyStrategy: HistoryStrategy
+  historyHint: string
+  relatedTopicIds: string[]
+  entityTags: string[]
+  confidence: number
+}
+
+interface MultiRouteResult {
+  routes: SubRouteResult[]     // 单话题时长度=1
+  isMultiTopic: boolean
+  splitHint: string
+}
+```
+
+### Router Prompt 拆分规则
+
+```
+若消息包含 ≥2 个独立问题/任务（互不依赖，可分别独立回答）→ 拆分
+若问题之间有依赖或共享上下文（"用A的结果做B"）→ 不拆分，选主话题
+subMessage 必须自含上下文，不能有指代不明的代词
+最多拆分为 3 个子任务
+若任一话题 confidence < 0.6 → 不拆分，退化为单话题（原始消息）
+```
+
+### History 保存规则
+
+| 保存内容 | 保存到哪个 bucket |
+|---------|-----------------|
+| `subMessage`（用户侧） | 对应话题的 bucket |
+| LLM 回复（助手侧） | 对应话题的 bucket |
+| 原始 `userMessage` | **不保存**——避免跨话题噪音 |
+
+### 合并逻辑（handleMessage）
+
+```typescript
+if (responses.length === 1) {
+  return responses[0].reply                 // 单话题：直接返回
+}
+// 多话题：按路由顺序拼接，失败项输出占位符
+return responses
+  .map(r => r.error ? '（该部分处理失败，请稍后重试）' : r.reply)
+  .join('\n\n---\n\n')
+```
+
+### 边界情况
+
+| 情况 | 处理方式 |
+|------|---------|
+| 路由器拆出 >3 个话题 | 限制最多 3 个 |
+| 任一子任务 Stage 2 异常 | 不影响其他子任务，该位置返回占位符 |
+| 所有子任务失败 | 降级到全局 historyManager |
+| 话题有依赖关系 | Router 不拆分，单话题处理 |
+| 后台 Pass | 每个话题独立触发 |

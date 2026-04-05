@@ -204,7 +204,7 @@ async function main() {
     useWebSocket: true,
   });
 
-  // 8. 消息历史管理器（全局 fallback，话题路由关闭时使用）
+  // 8. 全局 historyManager（降级备用，话题路由启动失败时使用）
   const historyManager = new MessageHistoryManager({
     maxMessages: 1000,
     maxTokens: 180_000,
@@ -213,12 +213,9 @@ async function main() {
     compressionThreshold: 0.9,
   });
 
-  // 8.1 话题图（Phase 4 话题路由，按环境变量开关）
-  const topicRoutingEnabled = process.env.XIAOZHI_TOPIC_ROUTING === 'true';
-  if (topicRoutingEnabled) {
-    const topicGraph = getTopicGraph();
-    logger.info('话题路由已启用（XIAOZHI_TOPIC_ROUTING=true）');
-  }
+  // 8.1 预初始化话题图（提前建表，避免首条消息延迟）
+  getTopicGraph();
+  logger.info('话题路由已启用');
 
   // 9. 消息处理
   feishuClient.setMessageHandler(async (msg) => {
@@ -371,16 +368,14 @@ async function handleMessage(
     }, THINKING_PROMPT_DELAY);
 
     try {
-      const topicRoutingEnabled = process.env.XIAOZHI_TOPIC_ROUTING === 'true';
+      // ── 3 阶段话题路由流水线 ──────────────────────────────────────────
+      const memoryManager = getMemoryManager();
+      await memoryManager.initialize();
+      const topicGraph = getTopicGraph();
 
       let replyText: string;
 
-      if (topicRoutingEnabled) {
-        // ── Phase 4：3 阶段话题路由流水线 ────────────────────────────────
-        const memoryManager = getMemoryManager();
-        await memoryManager.initialize();
-        const topicGraph = getTopicGraph();
-
+      try {
         // Stage 1：路由 + Context 组装
         const context = await routeAndAssemble(
           msg.content,
@@ -439,21 +434,15 @@ async function handleMessage(
           llmClient, topicGraph, memoryManager,
         );
 
-      } else {
-        // ── 原有全局 historyManager 流程（兜底）────────────────────────
+      } catch (routingErr) {
+        // 话题路由失败时降级到全局 historyManager（服务不中断）
+        logger.warn('话题路由失败，降级为全局 history:', routingErr);
         historyManager.addMessage({
           role: 'user',
           content: `[主人@飞书] ${msg.content}`,
         });
-
         const systemPrompt = await buildSystemPrompt(storage);
-
-        replyText = await runAgentLoop(
-          llmClient,
-          historyManager,
-          systemPrompt,
-          toolRegistry,
-        );
+        replyText = await runAgentLoop(llmClient, historyManager, systemPrompt, toolRegistry);
       }
 
       // 清除等待提示定时器

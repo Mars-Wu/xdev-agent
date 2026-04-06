@@ -90,13 +90,24 @@ export async function runAgentLoop(
     drainBackgroundNotifications(historyManager);
 
     // Micro-compact：每轮开始前截断旧 tool_result，避免上下文膨胀
-    const messages = microCompactMessages(historyManager.getMessages()) as Message[];
+    const allMessages = microCompactMessages(historyManager.getMessages()) as Message[];
+
+    // GLM API 只接受 user/assistant role；system 消息（历史摘要）合并进 system prompt
+    const systemMessages = allMessages.filter(m => m.role === 'system');
+    const messages = allMessages.filter(m => m.role !== 'system');
+    const summaryContent = systemMessages
+      .map(m => typeof m.content === 'string' ? m.content : '')
+      .filter(Boolean)
+      .join('\n\n');
+    const fullSystemPrompt = summaryContent
+      ? `${systemPrompt}\n\n${summaryContent}`
+      : systemPrompt;
 
     const response = await llmClient.chatSync({
       model: process.env.XIAOZHI_MODEL || 'glm-5',
       maxTokens: 16000,
       messages,
-      system: systemPrompt,
+      system: fullSystemPrompt,
       tools: toolDefs.length > 0 ? toolDefs : undefined,
     });
 

@@ -1,23 +1,19 @@
 // src/tools/agent-tool.ts
-// Agent 工具 - 创建子 Agent 大行复杂任务
+// Agent 工具 - 使用 InProcessAgent 在进程内隔离执行子任务
+//
+// 子 Agent 隔离原则（来自 learn-claude-code s04）：
+//   - 干净的独立 history，不继承父 Agent 上下文
+//   - tool 白名单可按类型限制
+//   - 父 Agent 只接收最终文本，不感知工具调用过程
 
 import type { Tool, ToolResult, ToolDefinition } from './tool-interface'
 import { successResult, errorResult } from './tool-interface'
-import { spawn } from 'child_process'
 import { createLogger } from '../utils/logger'
-import * as path from 'path'
-import * as fs from 'fs/promises'
+import { InProcessAgent, type AgentType } from '../agent/in-process-agent'
+import { configManager } from '../config'
 
 const logger = createLogger('agent-tool')
 
-/**
- * Agent 类型定义
- */
-export type AgentType = 'general-purpose' | 'explore' | 'plan'
-
-/**
- * Agent 工具定义
- */
 export const agentToolDefinition: ToolDefinition = {
   name: 'agent',
   description: `启动子 Agent 处理需要多步骤或并行探索的复杂任务。
@@ -39,37 +35,26 @@ prompt 参数要求：
   parameters: {
     subagent_type: {
       type: 'string',
-      description: 'Agent 类型',
+      description: 'Agent 类型：general-purpose（通用）/ explore（探索研究）/ plan（规划设计）',
       enum: ['general-purpose', 'explore', 'plan'],
       default: 'general-purpose',
     },
     description: {
       type: 'string',
-      description: '任务描述（3-5 个词）简短描述）',
+      description: '任务简短描述（3-5 个词）',
     },
     prompt: {
       type: 'string',
-      description: '完整的任务提示词',
+      description: '完整的任务提示词（必须自含上下文，子 Agent 看不到当前对话历史）',
     },
     model: {
       type: 'string',
-      description: '使用的模型（可选）',
-      enum: ['sonnet', 'opus', 'haiku'],
-    },
-    work_dir: {
-      type: 'string',
-      description: '工作目录（可选）',
+      description: '使用的模型（可选，默认使用配置中的 defaultModel）',
     },
     run_in_background: {
       type: 'boolean',
-      description: '是否在后台运行',
+      description: '是否在后台异步运行（不等待结果，立即返回）',
       default: false,
-    },
-    isolation: {
-      type: 'string',
-      description: '隔离模式',
-      enum: ['none', 'worktree'],
-      default: 'none',
     },
   },
   required: ['description', 'prompt'],
@@ -77,9 +62,8 @@ prompt 参数要求：
   readOnly: false,
 }
 
-/**
- * Agent 工具实现
- */
+let agentCounter = 0
+
 export const agentTool: Tool = {
   definition: agentToolDefinition,
 
@@ -87,76 +71,43 @@ export const agentTool: Tool = {
     const subagentType = (params.subagent_type as AgentType) || 'general-purpose'
     const description = params.description as string
     const prompt = params.prompt as string
-    const model = params.model as string | undefined
-    const workDir = params.work_dir as string | undefined
+    const model = (params.model as string | undefined) || configManager.getConfig().model.defaultModel
     const runInBackground = params.run_in_background === true
-    const isolation = params.isolation as string || 'none'
 
     if (!description || !prompt) {
       return errorResult('缺少 description 或 prompt 参数')
     }
 
+    const agentId = `sub-agent-${++agentCounter}-${Date.now()}`
+    const agent = new InProcessAgent({
+      id: agentId,
+      name: description,
+      type: subagentType,
+      model,
+    })
+
+    logger.info(`[agent-tool] 启动子 Agent: ${agentId} (${subagentType}) - ${description}`)
+
+    if (runInBackground) {
+      agent.execute(prompt)
+        .then(() => { agent.cleanup() })
+        .catch(err => logger.warn(`[agent-tool] 后台子 Agent 失败: ${err}`))
+      return successResult(`子 Agent 已在后台启动: ${description}`)
+    }
+
     try {
-      // 构建 xiaozhi-worker 命令
-      const args = ['create', description]
-
-      if (model) {
-        args.push('--model', model)
-      }
-
-      if (workDir) {
-        args.push('--work-dir', workDir)
-      }
-
-      if (prompt) {
-        // 将 prompt 写入临时文件
-        const promptFile = path.join(
-          process.env.HOME || '/tmp',
-          `agent-prompt-${Date.now()}.txt`
-        )
-        await fs.writeFile(promptFile, prompt, 'utf-8')
-        args.push('--prompt-file', promptFile)
-      }
-
-      // 执行命令
-      const child = spawn('xiaozhi-worker', args, {
-        stdio: runInBackground ? 'ignore' : 'inherit',
-      })
-
-      if (runInBackground) {
-        return successResult(`Agent 已在后台启动: ${description}`)
-      }
-
-      // 等待完成
-      return new Promise((resolve) => {
-        let output = ''
-        child.stdout?.on('data', (data) => {
-          output += data.toString()
-        })
-
-        child.on('close', (code) => {
-          if (code === 0) {
-            resolve(successResult(`Agent 任务完成: ${description}\n\n${output}`))
-          } else {
-            resolve(errorResult(`Agent 任务失败 (退出码: ${code})\n\n${output}`))
-          }
-        })
-
-        child.on('error', (err) => {
-          logger.error('Agent 进程错误:', err)
-        })
-      })
+      const result = await agent.execute(prompt)
+      agent.cleanup()
+      return successResult(result)
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
-      logger.error('Agent 工具执行失败:', error)
-      return errorResult(`Agent 执行失败: ${errorMsg}`)
+      agent.cleanup()
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.error('[agent-tool] 子 Agent 执行失败:', error)
+      return errorResult(`子 Agent 执行失败: ${msg}`)
     }
   },
 }
 
-/**
- * 创建 Agent 工具
- */
 export function createAgentTool(): Tool {
   return agentTool
 }

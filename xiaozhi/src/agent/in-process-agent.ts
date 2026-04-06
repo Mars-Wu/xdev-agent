@@ -10,6 +10,7 @@ import { getMessageBus, MessageType, AgentMessage } from './message-bus';
 import { buildContextPrompt, getContextInfo } from '../prompt/context';
 import { runAgentLoop } from '../core/agent-loop';
 import { createDefaultToolRegistry } from '../tools';
+import { configManager } from '../config';
 
 const logger = createLogger('in-process-agent');
 
@@ -310,7 +311,7 @@ export class InProcessAgent {
   private async makeDecision(question: string): Promise<string> {
     // 简单实现：使用 LLM
     const response = await this.llmClient.chatSync({
-      model: this.config.model || 'glm-5',
+      model: this.config.model || configManager.getConfig().model.defaultModel,
       maxTokens: 500,
       messages: [{ role: 'user', content: question }],
       system: `你是小智的决策 Agent。请简洁地回答问题，给出你的决策和建议。`,

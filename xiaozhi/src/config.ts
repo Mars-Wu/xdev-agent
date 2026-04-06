@@ -13,9 +13,26 @@ const logger = createLogger('config');
 
 /**
  * 模型配置
+ *
+ * 流水线各阶段使用不同模型：
+ *   defaultModel   — Stage 2 主 Agent（工具调用 + 长链路执行）
+ *   routerModel    — Stage 1 话题路由器（单次 JSON 分类）
+ *   selectorModel  — Stage 2.5 回复选择器（选最佳候选段）
+ *   backgroundModel— Background Pass（异步记忆提取/话题摘要）
+ *
+ * 可在 ~/.xiaozhi/config.json 的 "model" 字段中覆盖，
+ * 也可通过环境变量 XIAOZHI_MODEL / XIAOZHI_ROUTER_MODEL /
+ * XIAOZHI_SELECTOR_MODEL / XIAOZHI_BACKGROUND_MODEL 覆盖。
  */
 export interface ModelConfig {
+  /** 主 Agent 模型（Stage 2）*/
   defaultModel: string;
+  /** 话题路由器模型（Stage 1）*/
+  routerModel: string;
+  /** 回复选择器模型（Stage 2.5）*/
+  selectorModel: string;
+  /** 后台记忆/摘要模型（Background Pass）*/
+  backgroundModel: string;
   fallbackModel?: string;
   maxTokens?: number;
 }
@@ -126,7 +143,10 @@ export interface XiaozhiConfig {
 
 const DEFAULT_CONFIG: XiaozhiConfig = {
   model: {
-    defaultModel: 'glm-5',
+    defaultModel:    'glm-5-turbo',   // 主 Agent：OpenClaw/龙虾场景专项优化
+    routerModel:     'glm-4.7-flash', // 话题路由：免费，单次 JSON，指令遵循强
+    selectorModel:   'glm-4.7-flash', // 回复选择：免费，极简任务
+    backgroundModel: 'glm-4.7-flash', // 后台记忆：异步，免费够用
   },
   timeout: {
     apiTimeout: 120000,      // 2 分钟
@@ -229,9 +249,14 @@ class ConfigManager {
   private readEnvConfig(): Partial<XiaozhiConfig> {
     const config: Partial<XiaozhiConfig> = {};
 
-    // 模型配置
-    if (process.env.XIAOZHI_MODEL) {
-      config.model = { defaultModel: process.env.XIAOZHI_MODEL };
+    // 模型配置（各流水线阶段可独立覆盖）
+    const modelOverride: Partial<ModelConfig> = {};
+    if (process.env.XIAOZHI_MODEL)           modelOverride.defaultModel    = process.env.XIAOZHI_MODEL;
+    if (process.env.XIAOZHI_ROUTER_MODEL)    modelOverride.routerModel     = process.env.XIAOZHI_ROUTER_MODEL;
+    if (process.env.XIAOZHI_SELECTOR_MODEL)  modelOverride.selectorModel   = process.env.XIAOZHI_SELECTOR_MODEL;
+    if (process.env.XIAOZHI_BACKGROUND_MODEL) modelOverride.backgroundModel = process.env.XIAOZHI_BACKGROUND_MODEL;
+    if (Object.keys(modelOverride).length > 0) {
+      config.model = { ...DEFAULT_CONFIG.model, ...modelOverride };
     }
 
     // 超时配置

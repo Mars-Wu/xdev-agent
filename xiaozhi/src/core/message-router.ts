@@ -16,6 +16,7 @@ import type { LLMClient } from './llm-client'
 import type { MemoryManager } from '../memory/memory-manager'
 import { MessageHistoryManager, type Message } from './message-history'
 import { TopicGraph, type TopicSummary } from '../storage/topic-graph'
+import { configManager } from '../config'
 
 const logger = createLogger('message-router')
 
@@ -182,7 +183,7 @@ async function classifyMessage(
   activeSummaries: TopicSummary[],
   llmClient: LLMClient,
 ): Promise<MultiRouteResult> {
-  const routerModel = process.env.XIAOZHI_ROUTER_MODEL || 'glm-5-turbo'
+  const routerModel = configManager.getConfig().model.routerModel
 
   // 构建话题摘要列表文本
   const summaryText = activeSummaries.length === 0

@@ -159,7 +159,7 @@ async function main() {
   const llmClient = getLLMClient({
     apiKey: process.env.ZHIPU_API_KEY,
     baseURL: process.env.ZHIPU_API_BASE_URL || 'https://open.bigmodel.cn/api/anthropic',
-    defaultModel: process.env.XIAOZHI_MODEL || 'glm-5',
+    defaultModel: xiaozhiConfig.model.defaultModel,
     defaultMaxTokens: 16000,
     timeout: config.timeout,
   });

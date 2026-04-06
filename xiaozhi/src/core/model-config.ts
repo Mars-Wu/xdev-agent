@@ -18,9 +18,18 @@ export interface ModelConfig {
 }
 
 /**
- * 可用模型列表 - 仅 GLM-5 系列
+ * 可用模型列表
  */
 export const AVAILABLE_MODELS: ModelConfig[] = [
+  {
+    id: 'glm-4.7-flash',
+    name: 'GLM-4.7-Flash',
+    provider: 'glm',
+    contextWindow: 200_000,
+    maxOutput: 128_000,
+    costPerMtok: { input: 0, output: 0 }, // 免费模型，30B SOTA，Agentic 优化
+    aliases: ['flash', 'g4f', 'glm-4-flash', 'glm-4.7-flash'],
+  },
   {
     id: 'glm-5',
     name: 'GLM-5',
@@ -80,6 +89,9 @@ export function resolveModelName(input: string): string {
 
   // 模糊匹配
   const lower = input.toLowerCase()
+  if (lower.includes('flash') || (lower.includes('glm') && lower.includes('4'))) {
+    return 'glm-4.7-flash'
+  }
   if (lower.includes('glm') && lower.includes('5')) {
     if (lower.includes('turbo')) {
       return 'glm-5-turbo'

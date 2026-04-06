@@ -2,7 +2,7 @@
 // 后台 LLM Pass：Stage 2 结束后异步执行，不阻塞飞书回复
 //
 // 职责：
-//   - 用 glm-5-turbo 分析本次执行摘要
+//   - 用 glm-4.7-flash 分析本次执行摘要（免费，异步，不影响主流程）
 //   - LLM 决定提取哪些实体标签、话题关系、episodic pattern
 //   - 写入话题图和 MemoryManager
 //
@@ -13,6 +13,7 @@ import type { LLMClient } from './llm-client'
 import type { MemoryManager } from '../memory/memory-manager'
 import type { TopicGraph } from '../storage/topic-graph'
 import { MemoryType, MemoryScope } from '../memory/types'
+import { configManager } from '../config'
 
 const logger = createLogger('background-memory')
 
@@ -96,7 +97,7 @@ export async function runBackgroundPass(
   topicGraph: TopicGraph,
   memoryManager: MemoryManager,
 ): Promise<void> {
-  const routerModel = process.env.XIAOZHI_ROUTER_MODEL || 'glm-5-turbo'
+  const backgroundModel = configManager.getConfig().model.backgroundModel
 
   try {
     // 限制 executionSummary 长度，避免 bg pass 浪费 token
@@ -108,7 +109,7 @@ export async function runBackgroundPass(
 ${truncatedSummary}`
 
     const response = await llmClient.chatSync({
-      model: routerModel,
+      model: backgroundModel,
       maxTokens: 512,
       system: BG_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userPrompt }],

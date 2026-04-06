@@ -15,6 +15,7 @@ import type { ToolRegistry } from '../tools/tool-registry';
 import { microCompactMessages } from '../context/micro-compact';
 import { getTodoManager } from '../tools/todo-manager';
 import { getBackgroundTaskManager } from '../tools/background-tasks';
+import { configManager } from '../config';
 
 const logger = createLogger('agent-loop');
 
@@ -62,6 +63,63 @@ function drainBackgroundNotifications(historyManager: MessageHistoryManager): vo
 }
 
 /**
+ * 从历史消息中提取最后一条用户问题文本（用于回复选择器判断相关性）
+ */
+function getUserQuestion(historyManager: MessageHistoryManager): string {
+  const messages = historyManager.getMessages();
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === 'user' && typeof msg.content === 'string') {
+      return msg.content;
+    }
+  }
+  return '';
+}
+
+/**
+ * 回复选择器：调用快速 LLM 判断哪一段候选文本最适合回复用户
+ * 仅当候选文本超过 1 条时调用，失败则静默 fallback 到最后一条
+ */
+async function selectBestResponse(
+  llmClient: LLMClient,
+  userQuestion: string,
+  candidates: string[],
+): Promise<string | null> {
+  if (candidates.length <= 1) return null;
+
+  const candidateList = candidates
+    .map((t, i) => `[${i + 1}]\n${t.slice(0, 600)}`)
+    .join('\n\n');
+
+  const prompt = `用户的问题是："${userQuestion.slice(0, 200)}"
+
+以下是AI助手处理过程中产生的 ${candidates.length} 段文本，请选择最适合直接回复用户的那段（信息量最大、最直接回答问题、不是"已完成"之类的完成确认）：
+
+${candidateList}
+
+只输出一个数字（1 到 ${candidates.length}），不要其他内容。`;
+
+  try {
+    const selectorModel = configManager.getConfig().model.selectorModel;
+    const response = await llmClient.chatSync({
+      model: selectorModel,
+      maxTokens: 10,
+      messages: [{ role: 'user', content: prompt }],
+      system: '你是回复质量评估员，只输出数字。',
+    });
+    const num = parseInt(response.content?.trim() ?? '', 10);
+    if (num >= 1 && num <= candidates.length) {
+      logger.info(`[Agent Loop] 回复选择器选中第 ${num} 段（共 ${candidates.length} 段候选，模型: ${selectorModel}）`);
+      return candidates[num - 1];
+    }
+    logger.warn(`[Agent Loop] 回复选择器返回无效数字: "${response.content}"，使用最后一段`);
+  } catch (err) {
+    logger.warn(`[Agent Loop] 回复选择器调用失败，降级到最后一段: ${err}`);
+  }
+  return null;
+}
+
+/**
  * 运行带工具调用的 Agent Loop
  *
  * @param llmClient      LLM 客户端
@@ -81,6 +139,7 @@ export async function runAgentLoop(
   const toolDefs = toolRegistry?.getDefinitions() ?? [];
   let turns = 0;
   let lastTextContent = '';
+  const candidateTexts: string[] = [];  // 每轮有实质文本时收集，供选择器使用
   let roundsSinceTodoUpdate = 0; // p2-todo-reminder
 
   while (turns < maxTurns) {
@@ -104,7 +163,7 @@ export async function runAgentLoop(
       : systemPrompt;
 
     const response = await llmClient.chatSync({
-      model: process.env.XIAOZHI_MODEL || 'glm-5',
+      model: configManager.getConfig().model.defaultModel,
       maxTokens: 16000,
       messages,
       system: fullSystemPrompt,
@@ -116,6 +175,10 @@ export async function runAgentLoop(
     if (response.content) {
       assistantContent.push({ type: 'text', text: response.content });
       lastTextContent = response.content;
+      // 收集非空文本作为候选（长度 > 20 才算实质内容）
+      if (response.content.trim().length > 20) {
+        candidateTexts.push(response.content);
+      }
     }
     for (const call of response.toolCalls) {
       assistantContent.push({
@@ -168,6 +231,13 @@ export async function runAgentLoop(
 
   if (turns >= maxTurns) {
     logger.warn(`[Agent Loop] 达到最大轮次上限: ${maxTurns}，强制停止`);
+  }
+
+  // 多轮次有文本时，调用快速 LLM 选择最适合回复用户的那段
+  if (candidateTexts.length > 1) {
+    const userQuestion = getUserQuestion(historyManager);
+    const selected = await selectBestResponse(llmClient, userQuestion, candidateTexts);
+    if (selected) return selected;
   }
 
   return lastTextContent;

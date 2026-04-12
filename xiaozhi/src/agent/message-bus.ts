@@ -163,43 +163,62 @@ export class MessageBus extends EventEmitter {
 
   /**
    * 发送并等待回复
+   *
+   * 使用 sendWithId() 保证监听的消息 ID 和实际发出的 ID 一致，
+   * 并在超时或发送失败时都能正确清理监听器。
    */
   async sendAndWait(
     message: Omit<AgentMessage, 'id' | 'timestamp'>,
     timeout: number = 30000
   ): Promise<AgentMessage | null> {
-    const fullMessage = await this.prepareMessage(message);
+    const messageId = this.generateId();
 
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const cleanup = () => {
+        clearTimeout(timer);
         this.off('message', handler);
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
         resolve(null);
       }, timeout);
 
       const handler = (msg: AgentMessage) => {
-        if (msg.replyTo === fullMessage.id) {
-          clearTimeout(timer);
-          this.off('message', handler);
+        if (msg.replyTo === messageId) {
+          cleanup();
           resolve(msg);
         }
       };
 
       this.on('message', handler);
-      this.send(message);
+      this.sendWithId(message, messageId).catch(err => {
+        logger.error('sendAndWait 发送失败:', err);
+        cleanup();
+        resolve(null);
+      });
     });
   }
 
   /**
-   * 准备消息
+   * 以预生成的 ID 发送消息（供 sendAndWait 使用）
    */
-  private async prepareMessage(
-    message: Omit<AgentMessage, 'id' | 'timestamp'>
-  ): Promise<AgentMessage> {
-    return {
+  private async sendWithId(
+    message: Omit<AgentMessage, 'id' | 'timestamp'>,
+    id: string
+  ): Promise<void> {
+    const fullMessage: AgentMessage = {
       ...message,
-      id: this.generateId(),
+      id,
       timestamp: Date.now(),
     };
+    this.addToHistory(fullMessage);
+    this.emit('message', fullMessage);
+    if (message.to === '*') {
+      await this.broadcast(fullMessage);
+    } else {
+      await this.deliver(fullMessage);
+    }
   }
 
   /**

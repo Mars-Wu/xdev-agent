@@ -5,6 +5,7 @@
 //   - 用 glm-4.7-flash 分析本次执行摘要（免费，异步，不影响主流程）
 //   - LLM 决定提取哪些实体标签、话题关系、episodic pattern
 //   - 写入话题图和 MemoryManager
+//   - （新）从完整对话消息中提取 preference/feedback/convention/decision 类记忆
 //
 // 设计原则：失败不影响主流程，用 try/catch 全包
 
@@ -14,6 +15,7 @@ import type { MemoryManager } from '../memory/memory-manager'
 import type { TopicGraph } from '../storage/topic-graph'
 import { MemoryType, MemoryScope } from '../memory/types'
 import { configManager } from '../config'
+import { auxChatMessages } from './auxiliary-client'
 
 const logger = createLogger('background-memory')
 
@@ -82,9 +84,13 @@ export function triggerBackgroundPass(
 ): void {
   // 不 await，让它在后台运行
   setImmediate(() => {
-    runBackgroundPass(input, llmClient, topicGraph, memoryManager).catch(err => {
-      logger.error(`后台 Pass 异常 (topicId=${input.topicId}):`, err)
-    })
+    try {
+      runBackgroundPass(input, llmClient, topicGraph, memoryManager).catch(err => {
+        logger.error(`后台 Pass 异常 (topicId=${input.topicId}):`, err)
+      })
+    } catch (err) {
+      logger.error(`后台 Pass 启动异常 (topicId=${input.topicId}):`, err)
+    }
   })
 }
 
@@ -224,4 +230,122 @@ export function buildExecutionSummary(messages: Array<{ role: string; content: a
   }
 
   return parts.join('\n') || '（无工具调用，直接回答）'
+}
+
+// ── 记忆提取（从完整对话消息） ────────────────────────────────────────────
+
+const MEMORY_EXTRACT_SYSTEM = `你是记忆提取助手。从对话中找出值得长期记住的信息。
+
+只提取以下4类，其他忽略：
+1. preference（用户偏好/习惯）
+2. feedback（用户纠正/评价，如"不要这样做"、"上次方法不好"）
+3. convention（项目约定/规范）
+4. decision（重要技术决策及原因）
+
+输出 JSON 数组（如无则返回 []）：
+[
+  {
+    "content": "简洁一句话",
+    "category": "preference|feedback|convention|decision",
+    "importance": 1-10
+  }
+]
+
+只输出 JSON，不解释。`
+
+export interface MemoryExtractionInput {
+  topicId: string
+  messages: Array<{ role: string; content: any }>
+}
+
+/**
+ * 触发记忆提取（fire-and-forget）
+ * 从完整对话消息中提取 preference/feedback/convention/decision 类记忆。
+ * 使用辅助模型（glm-4.7-flash）保持低成本。
+ * 触发条件：对话中至少有 2 条用户消息。
+ */
+export function triggerMemoryExtraction(
+  input: MemoryExtractionInput,
+  memoryManager: MemoryManager,
+): void {
+  // 至少 2 条用户消息才值得提取
+  const userMsgCount = input.messages.filter(m => m.role === 'user').length
+  if (userMsgCount < 2) return
+
+  setImmediate(() => {
+    runMemoryExtraction(input, memoryManager).catch(err => {
+      logger.warn(`记忆提取异常 (topicId=${input.topicId}):`, err)
+    })
+  })
+}
+
+async function runMemoryExtraction(
+  input: MemoryExtractionInput,
+  memoryManager: MemoryManager,
+): Promise<void> {
+  // 构建对话文本（只取 user/assistant 文本，截断避免超 token）
+  const lines: string[] = []
+  for (const msg of input.messages) {
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue
+    const text = extractTextContent(msg.content)
+    if (!text) continue
+    lines.push(`[${msg.role === 'user' ? '用户' : '助手'}] ${text.slice(0, 300)}`)
+    if (lines.length >= 20) break  // 最多取前 20 轮
+  }
+  const conversationText = lines.join('\n')
+  if (!conversationText) return
+
+  const raw = await auxChatMessages({
+    system: MEMORY_EXTRACT_SYSTEM,
+    messages: [{ role: 'user', content: `对话内容：\n${conversationText}` }],
+    maxTokens: 512,
+  })
+  if (!raw) return
+
+  const jsonMatch = raw.match(/\[[\s\S]*\]/)
+  if (!jsonMatch) return
+
+  let items: Array<{ content: string; category: string; importance: number }>
+  try {
+    items = JSON.parse(jsonMatch[0])
+  } catch {
+    return
+  }
+  if (!Array.isArray(items) || items.length === 0) return
+
+  let saved = 0
+  for (const item of items) {
+    if (!item.content || !item.category) continue
+    const validCategories = ['preference', 'feedback', 'convention', 'decision']
+    if (!validCategories.includes(item.category)) continue
+
+    try {
+      await memoryManager.addMemory({
+        content: item.content,
+        type: MemoryType.SEMANTIC,
+        scope: MemoryScope.PRIVATE,
+        category: item.category as any,
+        importance: Math.min(10, Math.max(1, item.importance || 6)),
+        tags: [input.topicId],
+      })
+      saved++
+    } catch {
+      // 单条保存失败不中止
+    }
+  }
+
+  if (saved > 0) {
+    logger.info(`记忆提取完成: topicId=${input.topicId} 新增 ${saved} 条`)
+  }
+}
+
+function extractTextContent(content: any): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text || '')
+      .join(' ')
+  }
+  return ''
 }

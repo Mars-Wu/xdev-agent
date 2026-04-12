@@ -7,6 +7,7 @@ import swaggerUi from 'swagger-ui-express';
 import { createLogger } from '../utils/logger';
 import { LLMClient } from '../core/llm-client';
 import { MessageHistoryManager } from '../core/message-history';
+import { configManager } from '../config';
 
 const logger = createLogger('hooks-receiver');
 
@@ -356,7 +357,7 @@ export class HooksReceiver {
 
     try {
       const response = await this.llmClient.chatSync({
-        model: model || 'glm-5',
+        model: model || configManager.getConfig().model.defaultModel,
         maxTokens: 16000,
         messages: [{ role: 'user', content: message }],
       });
@@ -391,7 +392,7 @@ export class HooksReceiver {
 
     try {
       const response = await this.llmClient.chatSync({
-        model: 'glm-5',
+        model: configManager.getConfig().model.defaultModel,
         maxTokens: 1000,
         messages: [{ role: 'user', content }],
       });

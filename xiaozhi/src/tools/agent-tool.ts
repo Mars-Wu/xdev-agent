@@ -35,8 +35,8 @@ prompt 参数要求：
   parameters: {
     subagent_type: {
       type: 'string',
-      description: 'Agent 类型：general-purpose（通用）/ explore（探索研究）/ plan（规划设计）',
-      enum: ['general-purpose', 'explore', 'plan'],
+      description: 'Agent 类型：general-purpose（通用）/ explore（探索研究）/ plan（规划设计）/ coder（编程专家，使用 GLM-5）',
+      enum: ['general-purpose', 'explore', 'plan', 'coder'],
       default: 'general-purpose',
     },
     description: {
@@ -71,7 +71,9 @@ export const agentTool: Tool = {
     const subagentType = (params.subagent_type as AgentType) || 'general-purpose'
     const description = params.description as string
     const prompt = params.prompt as string
-    const model = (params.model as string | undefined) || configManager.getConfig().model.defaultModel
+    const cfg = configManager.getConfig().model
+    const model = (params.model as string | undefined) ||
+      (subagentType === 'coder' ? cfg.coderModel : cfg.defaultModel)
     const runInBackground = params.run_in_background === true
 
     if (!description || !prompt) {
@@ -90,7 +92,7 @@ export const agentTool: Tool = {
 
     if (runInBackground) {
       agent.execute(prompt)
-        .then(() => { agent.cleanup() })
+        .finally(() => { agent.cleanup() })
         .catch(err => logger.warn(`[agent-tool] 后台子 Agent 失败: ${err}`))
       return successResult(`子 Agent 已在后台启动: ${description}`)
     }

@@ -3,6 +3,7 @@
 
 import { createLogger } from '../utils/logger';
 import { getLLMClient } from '../core';
+import { configManager } from '../config';
 import {
   MemoryType,
   MemoryScope,
@@ -68,7 +69,7 @@ export class MemoryExtractor {
 
     // 调用 LLM 进行提取
     const response = await this.llmClient.chatSync({
-      model: process.env.XIAOZHI_MODEL || 'glm-5',
+      model: configManager.getConfig().model.defaultModel,
       maxTokens: 2000,
       messages: [
         {

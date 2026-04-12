@@ -7,7 +7,7 @@ server:
   hooks_port: 8081
 
 xiaozhi:
-  model: "claude-sonnet-4-5-20250929"
+  model: "glm-5-turbo"
   max_context_messages: 50
   compress_threshold: 40
 
@@ -22,7 +22,7 @@ worker:
   scripts_dir: "/var/lib/xiaozhi/scripts"
   max_workers_per_session: 5
   default_timeout: 3600
-  default_model: "sonnet"
+  default_model: "glm-5-turbo"
 
 storage:
   type: "sqlite"

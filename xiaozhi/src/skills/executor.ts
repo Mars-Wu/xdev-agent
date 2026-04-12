@@ -5,6 +5,7 @@ import { getLLMClient } from '../core'
 import { getSkillRegistry } from './registry'
 import type { SkillDefinition, SkillExecutionContext, SkillExecutionResult } from './types'
 import { createLogger } from '../utils/logger'
+import { configManager } from '../config'
 
 const logger = createLogger('skill-executor')
 
@@ -139,7 +140,7 @@ export class SkillExecutor {
 
     try {
       const response = await llmClient.chatSync({
-        model: skill.model || process.env.XIAOZHI_MODEL || 'glm-5',
+        model: skill.model || configManager.getConfig().model.defaultModel,
         maxTokens: skill.maxTokens || 16000,
         messages,
         system: systemPrompt,
@@ -212,7 +213,7 @@ export class SkillExecutor {
 
     try {
       const response = await llmClient.chatSync({
-        model: skill.model || process.env.XIAOZHI_MODEL || 'glm-5',
+        model: skill.model || configManager.getConfig().model.defaultModel,
         maxTokens: skill.maxTokens || 16000,
         messages,
         system: systemPrompt,

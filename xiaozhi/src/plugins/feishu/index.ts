@@ -72,6 +72,7 @@ export function createFeishuPlugin(config: FeishuPluginConfig): ChannelPlugin & 
       data: {
         chatId: msg.chatId,
         msgType: msg.msgType,
+        imageKey: msg.imageKey,   // 图片消息专用
         fileKey: msg.fileKey,
         fileName: msg.fileName,
         fileType: msg.fileType,

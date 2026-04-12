@@ -5,6 +5,7 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import { createLogger } from '../utils/logger'
 import { Tool, ToolContext, ToolResult, successResult, errorResult } from './tool-interface'
+import { fuzzyFindAndReplace } from './fuzzy-match'
 
 const logger = createLogger('file-tools')
 
@@ -228,37 +229,40 @@ export const editTool: Tool = {
       // 读取文件
       const content = await fs.readFile(resolvedPath, 'utf-8')
 
-      // 检查 old_string 是否存在
-      if (!content.includes(oldString)) {
-        return errorResult(`未找到要替换的内容: ${oldString.slice(0, 50)}...`)
-      }
-
-      // 检查唯一性（如果不是 replace_all）
-      if (!replaceAll) {
-        const matches = content.split(oldString).length - 1
-        if (matches > 1) {
-          return errorResult(
-            `找到 ${matches} 处匹配，old_string 必须唯一。如果需要替换所有匹配项，请设置 replace_all: true`,
-          )
+      if (replaceAll) {
+        // replace_all 模式：仍使用精确匹配
+        if (!content.includes(oldString)) {
+          return errorResult(`未找到要替换的内容: ${oldString.slice(0, 50)}...`)
         }
+        const newContent = content.split(oldString).join(newString)
+        const replacementCount = content.split(oldString).length - 1
+        await fs.writeFile(resolvedPath, newContent, 'utf-8')
+        logger.info(`文件已编辑: ${resolvedPath} (全量替换 ${replacementCount} 处)`)
+        return successResult(`文件已编辑: ${resolvedPath} (${replacementCount} 处替换)`, {
+          path: resolvedPath,
+          replacements: replacementCount,
+        })
       }
 
-      // 执行替换
-      const newContent = replaceAll
-        ? content.split(oldString).join(newString)
-        : content.replace(oldString, newString)
+      // T8: 单处替换使用8策略模糊匹配链
+      const fuzzyResult = fuzzyFindAndReplace(content, oldString, newString)
+      if (!fuzzyResult) {
+        return errorResult(
+          `未找到要替换的内容（已尝试8种匹配策略）: ${oldString.slice(0, 100)}...`,
+        )
+      }
 
-      // 写入文件
-      await fs.writeFile(resolvedPath, newContent, 'utf-8')
+      // 多处匹配（策略1精确匹配时返回 null，此处不应出现 count > 1）
+      await fs.writeFile(resolvedPath, fuzzyResult.result, 'utf-8')
 
-      const replacementCount = replaceAll
-        ? content.split(oldString).length - 1
-        : 1
-
-      logger.info(`文件已编辑: ${resolvedPath} (${replacementCount} 处替换)`)
-      return successResult(`文件已编辑: ${resolvedPath} (${replacementCount} 处替换)`, {
+      const strategyNote = fuzzyResult.strategy !== 'exact'
+        ? ` [使用模糊匹配策略: ${fuzzyResult.strategy}]`
+        : ''
+      logger.info(`文件已编辑: ${resolvedPath}${strategyNote}`)
+      return successResult(`文件已编辑: ${resolvedPath}${strategyNote}`, {
         path: resolvedPath,
-        replacements: replacementCount,
+        replacements: 1,
+        strategy: fuzzyResult.strategy,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

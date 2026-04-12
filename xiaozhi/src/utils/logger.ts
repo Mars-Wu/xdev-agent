@@ -2,6 +2,7 @@
 // 日志工具 - 支持请求追踪、动态日志级别、格式化输出
 
 import * as crypto from 'crypto';
+import { redactSecrets } from './redact';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -178,8 +179,8 @@ export function createLogger(name: string, options?: { traceId?: string; data?: 
       };
     }
 
-    // 输出日志
-    const output = formatOutput(entry);
+    // 输出日志（T4: 脱敏处理）
+    const output = redactSecrets(formatOutput(entry));
 
     switch (level) {
       case 'error':

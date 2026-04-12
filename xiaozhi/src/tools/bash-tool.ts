@@ -1,34 +1,14 @@
 // src/tools/bash-tool.ts
 // Bash 命令执行工具
 
-import { exec } from 'child_process'
-import { promisify } from 'util'
-import * as path from 'path'
+import { spawn } from 'child_process'
 import { createLogger } from '../utils/logger'
 import { Tool, ToolContext, ToolResult, successResult, errorResult } from './tool-interface'
+import { checkCommandSafety } from './command-safety'
+import { isInterrupted } from '../utils/interrupt'
+import { isSafeUrl, extractUrlsFromCommand } from '../utils/url-safety'
 
 const logger = createLogger('bash-tool')
-const execAsync = promisify(exec)
-
-// p2-cmd-safety：结构性危险模式检测（参考 originClaw bashSecurity.ts）
-const BLOCKED_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
-  { pattern: /\$\{[^}]*@[PQE]/, message: '${var@P} 参数转换（可能构造注入命令）' },
-  { pattern: /eval\s+/, message: 'eval 执行' },
-  { pattern: /curl[^|]*\|\s*(ba?sh|sh)\b/i, message: '管道执行远程脚本' },
-  { pattern: /wget[^|]*\|\s*(ba?sh|sh)\b/i, message: '管道执行远程脚本' },
-  { pattern: /\/dev\/tcp\//i, message: '/dev/tcp 网络反弹' },
-  { pattern: /rm\s+-rf\s+\/(?:\s|$)/, message: 'rm -rf / 删除根目录' },
-  { pattern: /:\(\)\s*\{.*\}\s*;/, message: 'fork bomb' },
-]
-
-function validateCommand(cmd: string): { safe: boolean; reason?: string } {
-  for (const { pattern, message } of BLOCKED_PATTERNS) {
-    if (pattern.test(cmd)) {
-      return { safe: false, reason: `检测到危险模式：${message}` }
-    }
-  }
-  return { safe: true }
-}
 
 /**
  * Bash 工具定义
@@ -93,55 +73,99 @@ export const bashTool: Tool = {
       return errorResult('缺少 command 参数')
     }
 
-    // p2-cmd-safety：安全检查
-    const safety = validateCommand(command)
-    if (!safety.safe) {
+    // T3: 增强安全检查（30+ 危险模式，分硬阻断 / 警告两级）
+    const safety = checkCommandSafety(command)
+    if (safety.level === 'block') {
       logger.warn(`命令被安全检查拒绝: ${safety.reason} | 命令: ${command.slice(0, 100)}`)
       return errorResult(`命令被拒绝：${safety.reason}`)
     }
+    if (safety.level === 'warn') {
+      logger.warn(`危险命令警告 [${safety.reason}]: ${command.slice(0, 100)}`)
+    }
 
-    try {
-      logger.debug(`执行命令: ${command}`)
-
-      const { stdout, stderr } = await execAsync(command, {
-        cwd,
-        timeout,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-        env: {
-          ...process.env,
-          LANG: 'en_US.UTF-8',
-          LC_ALL: 'en_US.UTF-8',
-        },
-      })
-
-      const output = stdout || stderr || '(无输出)'
-
-      // 截断过长输出
-      const truncatedOutput =
-        output.length > 50000
-          ? output.slice(0, 50000) + '\n...(输出已截断)'
-          : output
-
-      return successResult(truncatedOutput, {
-        stdout: stdout.length > 50000 ? '(输出过长，已截断)' : stdout,
-        stderr,
-        exitCode: 0,
-      })
-    } catch (error: unknown) {
-      const execError = error as { stdout?: string; stderr?: string; message?: string }
-      // 即使命令失败，也返回输出（包含错误信息）
-      const output = execError.stdout || execError.stderr || execError.message || 'Unknown error'
-
-      return {
-        success: false,
-        output,
-        error: execError.message || 'Command failed',
-        data: {
-          stdout: execError.stdout,
-          stderr: execError.stderr,
-        },
+    // T7: SSRF 防护（curl/wget 命令中的 URL 安全检查）
+    if (/\b(?:curl|wget)\b/.test(command)) {
+      const urls = extractUrlsFromCommand(command)
+      for (const url of urls) {
+        const safe = await isSafeUrl(url)
+        if (!safe) {
+          return errorResult(
+            `URL 安全检查失败：${url} 指向私有/内网地址，请求被阻断（SSRF 防护）`,
+          )
+        }
       }
     }
+
+    logger.debug(`执行命令: ${command}`)
+
+    // T10: 使用 spawn 以支持中断信号轮询
+    return new Promise<ToolResult>((resolve) => {
+      const proc = spawn('bash', ['-c', command], {
+        cwd,
+        env: { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
+      })
+
+      let stdout = ''
+      let stderr = ''
+      let killed = false
+
+      // 轮询中断信号（每 500ms 检查一次）
+      const interruptCheck = setInterval(() => {
+        if (isInterrupted() && !killed) {
+          killed = true
+          proc.kill('SIGINT')
+          setTimeout(() => {
+            if (!proc.killed) proc.kill('SIGKILL')
+          }, 2000)
+        }
+      }, 500)
+
+      // 超时处理
+      const timeoutHandle = setTimeout(() => {
+        if (!killed) {
+          killed = true
+          proc.kill('SIGKILL')
+          logger.warn(`命令超时（${timeout}ms）: ${command.slice(0, 80)}`)
+        }
+      }, timeout)
+
+      proc.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString() })
+
+      proc.on('close', (code: number | null) => {
+        clearInterval(interruptCheck)
+        clearTimeout(timeoutHandle)
+
+        const raw = stdout || stderr || '(无输出)'
+        const output = raw.length > 50000 ? raw.slice(0, 50000) + '\n...(输出已截断)' : raw
+
+        if (killed && isInterrupted()) {
+          resolve(successResult(output + '\n[已被用户中断]', { stdout, stderr, exitCode: 130 }))
+          return
+        }
+
+        if (code === 0 || code === null) {
+          resolve(successResult(output, {
+            stdout: stdout.length > 50000 ? '(输出过长，已截断)' : stdout,
+            stderr,
+            exitCode: code ?? 0,
+          }))
+        } else {
+          resolve({
+            success: false,
+            output,
+            error: `命令退出码 ${code}`,
+            data: { stdout, stderr, exitCode: code },
+          })
+        }
+      })
+
+      proc.on('error', (err: Error) => {
+        clearInterval(interruptCheck)
+        clearTimeout(timeoutHandle)
+        resolve(errorResult(`命令执行错误: ${err.message}`))
+      })
+    })
   },
 
   validateParams(params: Record<string, unknown>): { valid: boolean; errors?: string[] } {

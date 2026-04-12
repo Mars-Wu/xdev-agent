@@ -1,315 +1,200 @@
-# 小智 (Xiaozhi) - AI 管家系统
+# 小智 (Xiaozhi) - AI 管家
 
-基于 Claude CLI 的智能管家系统，通过飞书提供对话接口，拥有 AI 专家团队处理特定类型任务，支持自我升级、定时任务、Gateway 控制平面和插件系统。
+基于 [智谱 GLM API](https://open.bigmodel.cn)（Claude 兼容端点）的自主 AI 管家，以 systemd 用户服务方式运行，主要通过飞书（Lark）接收和回复消息。
 
-## 📚 文档
-
-- **[功能说明与部署指南](docs/GUIDE.md)** - 完整的功能模块说明、安装部署、配置和使用指南
-- **[API 参考](docs/GUIDE.md#api-参考)** - HTTP API 和 Gateway WebSocket API
-- **[故障排查](docs/GUIDE.md#故障排查)** - 常见问题和解决方案
+---
 
 ## 架构概览
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           通信通道                                        │
-│  ┌─────────────┐              ┌─────────────┐                             │
-│  │   飞书用户   │              │  CLI 客户端  │                            │
-│  └──────┬──────┘              └──────┬──────┘                             │
-└─────────┼────────────────────────────┼────────────────────────────────────┘
-          │ ① WebSocket 消息            │ ② WebSocket 连接
-          ▼                             ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        Gateway 控制平面 (:18789)                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │  WebSocket Server                                                   │  │
-│  │  • chat - 与小智对话（CLI 无状态模式）                               │  │
-│  │  • session.list - 获取专家会话                                      │  │
-│  │  • plugin.list - 获取插件列表                                       │  │
-│  │  • channel.status - 获取通道状态                                    │  │
-│  │  • config.get - 获取系统配置                                        │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
-          │
-          ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                      Node.js 服务进程                                     │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │               ClaudeNativeAgent（小智）                             │  │
-│  │                     消息队列                                        │  │
-│  │   [主人@飞书] → [专家:coder] → [专家:analyst] → ...                 │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                             │                                            │
-│  ┌──────────────────────────┴───────────────────────────────────────┐   │
-│  │                  HTTP Server (:8081)                              │   │
-│  │   POST /api/experts/:name/call - 调用专家                         │   │
-│  │   POST /api/callbacks/complete - 专家完成回调                     │   │
-│  │   GET  /api/experts           - 专家列表                          │   │
-│  │   GET  /api/cron/tasks        - 定时任务列表                      │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                  Plugin SDK (事件总线)                             │   │
-│  │   • 消息接收/发送事件                                              │   │
-│  │   • 会话开始/结束事件                                              │   │
-│  │   • 插件生命周期管理                                               │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────────┘
-        │                    ▲                    ▲
-        │ 飞书回复            │ spawn             │ HTTP 回调
-        ▼                    │                   │
-┌─────────────────┐    ┌─────┴─────┐    ┌───────┴───────┐
-│    飞书用户      │    │ 代码专家   │    │  分析专家     │
-│                 │    │  coder    │    │  analyst     │
-└─────────────────┘    └───────────┘    └───────────────┘
+飞书消息输入
+     │
+Stage 0: 去重 / 长度校验
+     │
+Stage 1: 话题路由器 (glm-4.7-flash)
+     │   message-router.ts — 判断话题归属，选取历史策略，分拆多话题子问题
+     │
+Stage 1.5: Context 组装
+     │   按路由结果从话题 history bucket 加载适量上下文 + 相关记忆
+     │
+Stage 2: Agent Loop (glm-5-turbo)
+     │   agent-loop.ts — while(tool_use) 循环，支持 20+ 工具调用，最大 30 轮
+     │
+Stage 2.5: 回复选择器 (glm-4.7-flash) [多候选时启用]
+     │   selectBestResponse — 选出最符合原始问题的段落
+     │
+Stage 3: 合并回复 → 发送飞书
+     │
+Background Pass (异步, glm-4.7-flash)
+     └─ background-memory.ts — 提取实体标签、话题关系、episodic pattern，写入记忆
 ```
 
-## 双通道架构
+---
 
-小智支持两个通信通道，采用**主从模式**：
+## 多 LLM 流水线
 
-| 通道 | 定位 | 会话模式 | 用途 |
-|------|------|---------|------|
-| **飞书** | 主通道 | 持久化上下文 | 日常对话、任务委托、长期记忆 |
-| **CLI** | 管理通道 | 无状态 | 状态查看、调试、紧急操作 |
+| 阶段 | 模型（默认） | 作用 |
+|------|-------------|------|
+| Stage 1 路由 | `glm-4.7-flash` | 话题分类，单次 JSON 输出 |
+| Stage 2 主 Agent | `glm-5-turbo` | 工具调用 + 长链路推理 |
+| Stage 2.5 选择器 | `glm-4.7-flash` | 多候选回复排序 |
+| Background Pass | `glm-4.7-flash` | 异步记忆提取与摘要更新 |
 
-### 通道特性对比
+---
 
-| 特性 | 飞书通道 | CLI 通道 |
-|-----|---------|---------|
-| 会话持久化 | ✅ `--continue` | ❌ 无状态 |
-| 上下文累积 | ✅ 是 | ❌ 否 |
-| 阻塞主会话 | ❌ 否 | ❌ 否 |
-| 全局记忆 | ✅ 共享 | ✅ 共享 |
+## 核心模块
 
-## Gateway 控制平面
-
-WebSocket 服务器，提供实时 API 和事件推送。
-
-### 端点
-
-| 端点 | 说明 |
+| 目录 | 描述 |
 |------|------|
-| `ws://127.0.0.1:18789` | WebSocket 连接 |
-| `http://127.0.0.1:18789/health` | 健康检查 |
+| `src/core/` | LLM 客户端、Agent Loop、消息路由器、后台记忆 Pass |
+| `src/feishu/` | 飞书客户端（WebSocket 长连接 + 消息收发） |
+| `src/api/` | HTTP 接口（HooksReceiver，默认端口 8081） |
+| `src/gateway/` | WebSocket 控制平面（默认端口 18789） |
+| `src/memory/` | 记忆系统（SQLite 持久化，重要度排序） |
+| `src/storage/` | 话题图（TopicGraph）、SQLite 存储 |
+| `src/tools/` | 工具注册表及所有内置工具 |
+| `src/skills/` | 技能注册表（markdown 格式，运行时加载） |
+| `src/prompt/` | System prompt 构建器（注入记忆 + 技能菜单） |
+| `src/plugin-sdk/` | 事件总线（EventBus）、插件管理器 |
+| `src/context/` | 上下文压缩（micro-compact） |
+| `src/browser/` | Playwright 浏览器适配 |
+| `src/config/` | 配置管理（`~/.xiaozhi/config.json` + 环境变量） |
+| `src/monitor/` | 内存使用监控 |
 
-### 内置方法
+---
 
-| 方法 | 说明 |
+## 工具列表
+
+Agent Loop 可调用以下工具：
+
+| 工具 | 说明 |
 |------|------|
-| `ping` | 健康检查 |
-| `status` | 获取 Gateway 状态 |
-| `chat` | 与小智对话 |
-| `session.list` | 获取专家会话列表 |
-| `plugin.list` | 获取插件列表 |
-| `channel.status` | 获取通道状态 |
-| `config.get` | 获取系统配置 |
+| `bash` | 执行 shell 命令 |
+| `read` / `write` / `edit` / `list` | 文件读写 |
+| `glob` | 文件路径模式匹配 |
+| `grep` | 代码内容搜索 |
+| `web_search` | 网络搜索 |
+| `web_fetch` | 抓取网页内容 |
+| `browser_adapter` | Playwright 浏览器操作 |
+| `agent` | 启动子 Agent 执行独立任务 |
+| `schedule` | 创建定时/延迟任务 |
+| `use_skill` / `list_skills` | 按需加载技能 |
+| `todo` / `start_todo` / `complete_todo` | 轻量 Todo 追踪 |
+| `create_task` / `ready_tasks` | 持久化 DAG 任务系统 |
+| `background` / `notification` | 后台异步任务 |
+| `worktree` / `enter_worktree` / `exit_worktree` | Git Worktree 隔离工作区 |
 
-### CLI 客户端
+---
 
-```bash
-# 连接 Gateway
-node dist/cli/index.js
+## 配置
 
-# 可用命令
-/status    - 获取 Gateway 状态
-/sessions  - 获取专家会话列表
-/plugins   - 获取插件列表
-/channels  - 获取通道状态
-/config    - 获取系统配置
-/chat 消息 - 与小智对话
-/exit      - 退出 CLI
-```
+复制 `.env.example` 为 `.env`，填入以下环境变量：
 
-## 插件系统
+### 必填
 
-基于事件总线的插件架构，支持松耦合的扩展。
-
-### 事件类型
-
-```typescript
-enum EventTypes {
-  MESSAGE_RECEIVED = 'message:received',
-  MESSAGE_SENT = 'message:sent',
-  SESSION_STARTED = 'session:started',
-  SESSION_ENDED = 'session:ended',
-  PLUGIN_LOADED = 'plugin:loaded',
-  SYSTEM_START = 'system:start',
-}
-```
-
-### 插件接口
-
-```typescript
-interface IPlugin {
-  name: string;
-  version: string;
-  init(context: PluginContext): Promise<void>;
-  destroy(): Promise<void>;
-}
-```
-
-### 内置插件
-
-| 插件 | 说明 |
+| 变量 | 说明 |
 |------|------|
-| `feishu` | 飞书消息通道插件 |
+| `ZHIPU_API_KEY` | 智谱 API Key（或 `ANTHROPIC_AUTH_TOKEN`） |
+| `FEISHU_APP_ID` | 飞书应用 ID（以 `cli_` 开头） |
+| `FEISHU_APP_SECRET` | 飞书应用密钥 |
 
-## AI 专家团队
+### 可选
 
-| 专家 | 专长 | 适用场景 |
-|------|------|----------|
-| **coder** | 代码编写、重构、调试 | 写代码、改代码、修 bug |
-| **analyst** | 日志分析、数据诊断 | 分析日志、查问题 |
-| **operator** | 系统运维、部署 | 重启服务、部署应用 |
-| **researcher** | 信息收集、调研 | 技术调研、文档整理 |
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ZHIPU_API_BASE_URL` | `https://open.bigmodel.cn/api/anthropic` | API 基础地址 |
+| `XIAOZHI_MODEL` | `glm-5-turbo` | Stage 2 主 Agent 模型 |
+| `XIAOZHI_ROUTER_MODEL` | `glm-4.7-flash` | Stage 1 路由器模型 |
+| `XIAOZHI_SELECTOR_MODEL` | `glm-4.7-flash` | Stage 2.5 选择器模型 |
+| `XIAOZHI_BACKGROUND_MODEL` | `glm-4.7-flash` | Background Pass 模型 |
+| `XIAOZHI_MAX_TURNS` | `30` | Agent Loop 最大轮次 |
+| `XIAOZHI_GATEWAY_PORT` | `18789` | WebSocket 控制平面端口 |
+| `XIAOZHI_HOOKS_PORT` | `8081` | HTTP API 端口 |
+| `XIAOZHI_MAX_MESSAGE_LENGTH` | `100000` | 消息长度上限（字符） |
+| `XIAOZHI_LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error） |
 
-## 目录结构
+配置文件可放置于 `~/.xiaozhi/config.json`，优先级：环境变量 > 配置文件 > 默认值。
 
-```
-xiaozhi/
-├── src/
-│   ├── index.ts                     # 主入口
-│   ├── core/
-│   │   └── claude-native-agent.ts   # 小智 Agent
-│   ├── gateway/                     # Gateway 控制平面
-│   │   ├── server.ts                # WebSocket 服务器
-│   │   └── types.ts                 # 类型定义
-│   ├── plugin-sdk/                  # 插件 SDK
-│   │   ├── event-bus.ts             # 事件总线
-│   │   ├── manager.ts               # 插件管理器
-│   │   └── types.ts                 # 类型定义
-│   ├── plugins/                     # 内置插件
-│   │   └── feishu/                  # 飞书插件
-│   ├── cli/                         # CLI 客户端
-│   │   ├── index.ts                 # CLI 入口
-│   │   └── gateway-cli.ts           # Gateway CLI 实现
-│   ├── expert/
-│   │   ├── manager.ts               # 专家管理器
-│   │   ├── executor.ts              # 专家执行器
-│   │   ├── session-manager.ts       # 会话管理
-│   │   ├── token-counter.ts         # Token 计数
-│   │   ├── context-pruning.ts       # 上下文裁剪
-│   │   ├── progress-tracker.ts      # 进度追踪 (Harness)
-│   │   └── feature-list.ts          # 功能清单 (Harness)
-│   ├── config/                      # 配置系统
-│   │   ├── index.ts                 # 配置导出
-│   │   ├── schema.ts                # 配置 Schema
-│   │   └── hot-reload.ts            # 热重载
-│   ├── file/                        # 文件处理模块
-│   │   ├── manager.ts               # 文件管理器
-│   │   └── analyzer.ts              # 文件分析器
-│   ├── cron/
-│   │   ├── manager.ts               # 定时任务管理器
-│   │   └── types.ts                 # 类型定义
-│   ├── feishu/
-│   │   ├── client.ts                # 飞书客户端
-│   │   ├── types.ts                 # 类型定义
-│   │   ├── card-builder.ts          # 富卡片构建器
-│   │   └── card-types.ts            # 卡片类型定义
-│   ├── api/
-│   │   └── hooks-receiver.ts        # HTTP 接收器
-│   ├── monitor/
-│   │   └── memory-monitor.ts        # 内存监控
-│   ├── storage/
-│   │   └── sqlite.ts                # SQLite 存储
-│   └── utils/                       # 工具函数
-└── package.json
-
-~/.xiaozhi/
-├── files/                           # 用户上传的文件存储
-├── experts/                         # 专家配置
-│   ├── coder/CLAUDE.md
-│   ├── analyst/CLAUDE.md
-│   ├── operator/CLAUDE.md
-│   └── researcher/CLAUDE.md
-├── workspace/                       # 小智工作目录
-├── system-prompt.md                 # 小智提示词
-└── xiaozhi.db                       # 数据库
-```
-
-## 定时任务系统
-
-基于 node-cron 的定时任务管理，支持自然语言描述和回调触发。
-
-### API 端点
-
-| 路由 | 方法 | 说明 |
-|------|------|------|
-| `/api/cron/tasks` | GET | 获取定时任务列表 |
-| `/api/cron/tasks` | POST | 创建定时任务 |
-| `/api/cron/tasks/:id` | DELETE | 删除任务 |
-| `/api/cron/tasks/:id/enable` | POST | 启用任务 |
-| `/api/cron/tasks/:id/disable` | POST | 禁用任务 |
-
-## Harness 工程特性
-
-基于 OpenAI 和 Anthropic 的 Harness 工程最佳实践，提升长时运行 Agent 的可靠性。
-
-### 进度追踪 (Progress Tracker)
-
-在每个工作目录维护 `.xiaozhi-progress.md` 文件，让新 Agent 能快速了解历史工作。
-
-### 功能清单 (Feature List)
-
-使用 `.xiaozhi-features.json` 定义"什么算完成"，防止 Agent 提前宣布任务完成。
-
-### Token 计数
-
-实时估算上下文 Token 数量，支持多种模型：
-- Claude 系列
-- GPT 系列
-
-### 上下文裁剪
-
-基于优先级的消息保留策略：
-- 系统消息：最高优先级
-- 用户消息：高优先级
-- 助手消息：普通优先级
+---
 
 ## HTTP API
 
-| 路由 | 方法 | 说明 |
+默认端口 `8081`（`XIAOZHI_HOOKS_PORT`）。带 🔒 的端点需要 `Authorization: Bearer <token>` 请求头。
+
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| `/health` | GET | 健康检查 |
-| `/api/experts` | GET | 专家列表 |
-| `/api/experts/:name` | GET | 专家详情 |
-| `/api/experts/:name/call` | POST | 调用专家 |
-| `/api/callbacks/complete` | POST | 专家完成回调 |
-| `/api/sessions/:id` | GET | 会话状态 |
-| `/api/cron/tasks` | GET/POST | 定时任务管理 |
+| GET | `/health` | 健康检查 |
+| GET | `/health/detailed` 🔒 | 详细健康信息 |
+| GET | `/api/models` | 可用模型列表 |
+| GET | `/api/models/:id` | 模型详情 |
+| GET | `/api/sessions/stats` | 会话统计 |
+| POST | `/api/sessions/clear` 🔒 | 清空会话 |
+| POST | `/api/chat` 🔒 | 直接对话 |
+| POST | `/api/hooks/trigger` 🔒 | 触发钩子事件 |
+| GET | `/api/hooks` | 查看已注册钩子 |
+| POST | `/api/hooks/:type/register` 🔒 | 注册钩子处理器 |
+| POST | `/test/message` 🔒 | 发送测试消息 |
+| GET | `/api-docs.json` | Swagger API 文档 |
 
-## 文件处理功能
+---
 
-用户可以通过飞书发送文件给小智，小智会自动下载、分析并存储。
+## WebSocket 控制平面 (Gateway)
 
-### 支持的文件类型
+默认端口 `18789`（`XIAOZHI_GATEWAY_PORT`）。使用 JSON-RPC 风格协议。
 
-| 类型 | 扩展名 | 处理方式 |
-|------|--------|----------|
-| PDF | .pdf | 提取文本内容 |
-| Word | .doc, .docx | 提取文本内容 |
-| Excel | .xls, .xlsx | 解析表格数据 |
-| 图片 | .png, .jpg, .gif, .webp | Claude Vision 多模态分析 |
+| 方法 | 说明 |
+|------|------|
+| `ping` | 健康检查（返回 pong + timestamp） |
+| `status` | Gateway 运行状态 |
+| `session.list` | 会话列表 |
+| `config.get` | 获取系统配置（隐藏敏感字段） |
+| `plugin.list` | 已加载插件列表 |
+| `channel.status` | 通道连接状态 |
+| `chat` | 直接与小智对话 |
+
+---
+
+## 构建与测试
+
+```bash
+# 在 xiaozhi/ 目录下执行
+npm run build        # tsc 编译 + 复制内置技能到 dist/skills/
+npm run dev          # 直接用 ts-node 运行（无需编译）
+npm run watch        # 增量 tsc 监听
+
+npm test             # vitest 运行所有 *.test.ts
+npm run test:watch   # vitest 监听模式
+npm run test:coverage # v8 覆盖率报告
+
+# 运行单个测试文件
+npx vitest run src/memory/memory-manager.test.ts
+```
+
+---
 
 ## 服务管理
 
+小智以 systemd 用户服务运行：
+
 ```bash
-systemctl --user start xiaozhi    # 启动
-systemctl --user stop xiaozhi     # 停止
-systemctl --user restart xiaozhi  # 重启
-journalctl --user -u xiaozhi -f   # 日志
+systemctl --user restart xiaozhi    # 重启服务
+systemctl --user stop xiaozhi       # 停止服务
+systemctl --user status xiaozhi     # 查看状态
+journalctl --user -u xiaozhi -f     # 实时日志
 ```
 
-## 依赖
+---
 
-- Node.js >= 18
-- SQLite3
-- Claude CLI
-- ws (WebSocket)
-- node-cron（定时任务）
+## 数据目录
 
-## 许可证
+所有运行时数据存储于 `~/.xiaozhi/`：
 
-MIT
+| 路径 | 内容 |
+|------|------|
+| `~/.xiaozhi/xiaozhi.db` | SQLite 主数据库（话题图、任务等） |
+| `~/.xiaozhi/memory/` | 长期记忆文件 |
+| `~/.xiaozhi/workspace/` | Agent 自主任务工作目录 |
+| `~/.xiaozhi/sessions/` | 历史会话归档 |
+| `~/.xiaozhi/logs/` | 日志文件 |
+| `~/.xiaozhi/config.json` | 自定义配置（可选） |
+| `~/.xiaozhi/system-prompt.md` | 自定义系统提示词（可选） |

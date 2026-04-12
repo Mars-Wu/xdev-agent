@@ -33,6 +33,7 @@ export class FeishuClient {
   private wsClient?: lark.WSClient;
   private config: FeishuConfig;
   private messageHandler?: (msg: FeishuMessage) => Promise<void>;
+  private cardActionHandler?: (chatId: string, value: Record<string, unknown>) => Promise<void>;
   private processedMessages: Set<string> = new Set();
   private readonly MESSAGE_CACHE_SIZE = 1000;
 
@@ -67,6 +68,10 @@ export class FeishuClient {
 
   setMessageHandler(handler: (msg: FeishuMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  setCardActionHandler(handler: (chatId: string, value: Record<string, unknown>) => Promise<void>): void {
+    this.cardActionHandler = handler;
   }
 
   async start(): Promise<void> {
@@ -111,6 +116,21 @@ export class FeishuClient {
             await this.messageHandler(parsedMessage);
           }
         },
+        // 卡片按钮点击回调（用于 Clarify 工具的选项按钮）
+        'card.action.trigger': async (data: any) => {
+          if (this.cardActionHandler) {
+            const chatId = data.open_chat_id
+              || data.context?.open_chat_id
+              || data.event?.context?.open_chat_id
+              || '';
+            const actionValue: Record<string, unknown> = data.action?.value || {};
+            if (chatId) {
+              await this.cardActionHandler(chatId, actionValue).catch(err => {
+                logger.warn('卡片 action 处理失败:', err);
+              });
+            }
+          }
+        },
       });
 
       // WSClient 可能不支持事件监听，使用包装方式处理
@@ -146,19 +166,21 @@ export class FeishuClient {
     this.reconnectAttempts++;
     logger.info(`将在 ${this.currentDelay}ms 后进行第 ${this.reconnectAttempts} 次重连...`);
 
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
     this.reconnectTimer = setTimeout(async () => {
       logger.info(`开始第 ${this.reconnectAttempts} 次重连...`);
 
-      // P1 修复：在创建新实例前显式关闭旧实例，避免资源泄漏
+      // 显式关闭旧 WSClient，避免资源泄漏
       if (this.wsClient) {
         try {
-          // 尝试关闭旧的 WSClient（如果有关闭方法的话）
-          // lark WSClient 可能没有显式的 close 方法，这里设置为 undefined 让 GC 回收
-          this.wsClient = undefined;
-          logger.debug('旧 WSClient 实例已释放');
+          this.wsClient.close();
+          logger.debug('旧 WSClient 实例已关闭');
         } catch (error) {
           logger.warn('关闭旧 WSClient 时出错:', error);
         }
+        this.wsClient = undefined;
       }
 
       // 重新创建 WSClient 实例
@@ -251,21 +273,20 @@ export class FeishuClient {
       chunks.push(currentChunk.trim());
     }
 
-    // 发送分段消息
+    // 发送分段消息（用 post 富文本，改善长消息的可读性）
     const total = chunks.length;
     for (let i = 0; i < chunks.length; i++) {
-      const prefix = total > 1 ? `【${i + 1}/${total}】\n\n` : '';
-      await this.client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          content: JSON.stringify({ text: prefix + chunks[i] }),
-          msg_type: 'text',
-        },
-      });
+      const isMultiPart = total > 1;
+      if (isMultiPart) {
+        // 多段时用 post 格式，每段末尾加继续提示
+        const suffix = i < total - 1 ? `\n\n---\n*（${i + 1}/${total}，下文继续）*` : `\n\n---\n*（${total}/${total}，完）*`;
+        await this.sendMessage(chatId, { content: chunks[i] + suffix, type: 'post' });
+      } else {
+        await this.sendMessage(chatId, { content: chunks[i], type: 'post' });
+      }
       // 分段发送间隔，避免频率限制
       if (i < chunks.length - 1) {
-        await this.sleep(200);
+        await this.sleep(300);
       }
     }
 

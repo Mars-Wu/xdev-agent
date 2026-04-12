@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { createLogger } from '../utils/logger';
 import { SessionAction, SessionMemory } from './types';
+import { getXiaozhiHome } from '../config';
 
 const logger = createLogger('session-memory');
 
@@ -18,7 +19,7 @@ export class SessionMemoryManager {
   private sessionFile: string | null = null;
 
   constructor() {
-    const home = process.env.XIAOZHI_HOME || path.join(os.homedir(), '.xiaozhi');
+    const home = getXiaozhiHome();
     this.sessionDir = path.join(home, 'memory', 'sessions');
   }
 

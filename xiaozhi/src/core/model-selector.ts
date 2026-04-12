@@ -36,7 +36,7 @@ export interface ModelSelectorConfig {
  * 默认配置
  */
 const DEFAULT_CONFIG: ModelSelectorConfig = {
-  defaultModel: 'glm-5',
+  defaultModel: 'glm-5-turbo',
   allowAutoSwitch: true,
   complexityThresholds: {
     simple: 500,

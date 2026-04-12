@@ -266,15 +266,13 @@ describe('Model Costs', () => {
       expect(cost).toBeCloseTo(2, 4)
     })
 
-    it('应该正确计算 Claude 成本（含缓存）', () => {
+    it('应该正确计算 glm-4.7-flash 成本（免费模型）', () => {
       const cost = calculateCost(
-        'claude-sonnet-4-6',
-        1_000_000, // 输入：¥15
-        500_000, // 输出：¥37.5
-        500_000, // 缓存读取：¥0.75
-        200_000 // 缓存写入：¥4
+        'glm-4.7-flash',
+        1_000_000, // 输入：¥0（免费）
+        500_000, // 输出：¥0（免费）
       )
-      expect(cost).toBeCloseTo(57.25, 2)
+      expect(cost).toBeCloseTo(0, 4)
     })
 
     it('未知模型应该使用默认成本', () => {

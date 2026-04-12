@@ -223,6 +223,21 @@ export class TopicGraph {
   }
 
   /**
+   * 更新话题标题（T12：自动生成标题后写入）
+   * 若标题已存在则跳过（保留用户手动设置的标题）
+   */
+  updateTitle(topicId: string, title: string): void {
+    const existing = this.db.prepare(
+      'SELECT title FROM topics WHERE id = ?'
+    ).get(topicId) as { title?: string } | undefined
+    if (!existing || existing.title) return  // 话题不存在或已有标题，跳过
+    this.db.prepare(
+      'UPDATE topics SET title = ?, updated_at = ? WHERE id = ?'
+    ).run(title, Date.now(), topicId)
+    logger.debug(`话题标题已更新: ${topicId} → "${title}"`)
+  }
+
+  /**
    * 获取话题指定邻居关系
    */
   getRelations(topicId: string): TopicRelation[] {

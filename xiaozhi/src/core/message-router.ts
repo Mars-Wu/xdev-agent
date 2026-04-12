@@ -190,7 +190,7 @@ async function classifyMessage(
     ? '（暂无已知话题）'
     : activeSummaries.map(s => {
         const age = formatAge(Date.now() - s.updatedAt)
-        const tags = s.entityTags.length > 0 ? `  实体:[${s.entityTags.join(',')}]` : ''
+        const tags = s.entityTags?.length > 0 ? `  实体:[${s.entityTags.join(',')}]` : ''
         return `[${s.id}] 类型:${s.type}  摘要:"${s.summary || '（无摘要）'}"${tags}  最近活跃:${age}  轮次:${s.turnCount}`
       }).join('\n')
 
@@ -240,9 +240,12 @@ function parseMultiRouteResult(content: string, originalMessage: string): MultiR
 }
 
 function parseSingleRoute(r: any, fallbackMessage: string): RouteResult {
+  // topicId 缺失时：若明确是新话题则标记，否则路由 LLM 应返回已有话题 ID
+  // 避免所有失败路由共用同一个 'fallback' 话题（会混入不相关对话历史）
+  const topicId = r.topicId ? String(r.topicId) : (r.isNewTopic ? 'new:other' : 'new:other')
   return {
-    topicId: String(r.topicId || 'fallback'),
-    isNewTopic: Boolean(r.isNewTopic),
+    topicId,
+    isNewTopic: Boolean(r.isNewTopic) || !r.topicId,
     subMessage: String(r.subMessage || fallbackMessage),
     historyStrategy: validateStrategy(r.historyStrategy),
     historyHint: String(r.historyHint || ''),

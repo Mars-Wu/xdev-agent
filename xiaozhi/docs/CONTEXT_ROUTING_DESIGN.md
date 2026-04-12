@@ -60,8 +60,8 @@ OpenClaw **主动拒绝**了自动话题检测，原因：安全性（prompt inj
 飞书消息到达
   │
   ▼
-[Stage 1] Router + Assembler（glm-4-flash + 纯逻辑）
-  ├─ glm-4-flash 独立调用（~150ms）：
+[Stage 1] Router + Assembler（glm-4.7-flash + 纯逻辑）
+  ├─ glm-4.7-flash 独立调用（~150ms）：
   │    输入：话题摘要列表（轻量）+ 用户原始消息
   │    输出：{ topicId, entityTags, historyStrategy, relatedTopicIds }
   └─ 纯代码立即执行（~10ms，无 LLM）：
@@ -157,7 +157,7 @@ update_topic_summary({
 
 | 信息类型 | 产生阶段 | 归宿 | 生命周期 |
 |---------|---------|------|---------|
-| **话题归属**（路由信息）| Stage 1 glm-4-flash | 话题图 SQLite | 长期，随话题演化 |
+| **话题归属**（路由信息）| Stage 1 glm-4.7-flash | 话题图 SQLite | 长期，随话题演化 |
 | **执行过程**（工作记忆）| Stage 2 每轮追加 | topic history bucket | 中期，按 historyStrategy 老化 |
 | **提炼知识**（长期记忆）| Stage 2 主 LLM 工具调用 | MemoryManager | 长期，跨话题可用 |
 
@@ -225,7 +225,7 @@ CREATE TABLE pipeline_log (
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `src/core/message-router.ts` | **新建** | Stage 1：glm-4-flash 分类 + 上下文组装 |
+| `src/core/message-router.ts` | **新建** | Stage 1：glm-4.7-flash 分类 + 上下文组装 |
 | `src/storage/topic-graph.ts` | **新建** | 话题图 SQLite 操作层 |
 | `src/core/message-history.ts` | **修改** | 增加 `saveToDisk` / `loadFromDisk` 序列化 |
 | `src/tools/memory-tools.ts` | **新建** | `save_memory` / `update_topic_summary` 工具注册 |
@@ -257,7 +257,7 @@ async function handleMessage(msg, llmClient, feishuClient, ...) {
 ## 五、实施路径
 
 ### Phase 4-A：Router + Assembler（1 天）
-- 新建 `message-router.ts`：glm-4-flash 分类 + 纯代码组装
+- 新建 `message-router.ts`：glm-4.7-flash 分类 + 纯代码组装
 - 新建 `topic-graph.ts`：SQLite schema + getActiveSummaries + getOrCreateHistory
 - `MessageHistoryManager` 加 saveToDisk / loadFromDisk
 

@@ -62,7 +62,7 @@ export const GLM_CONFIG = {
 /**
  * 默认模型
  */
-export const DEFAULT_MODEL = 'glm-5'
+export const DEFAULT_MODEL = 'glm-5-turbo'
 
 /**
  * 获取模型配置

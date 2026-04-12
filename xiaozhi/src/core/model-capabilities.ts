@@ -25,6 +25,7 @@ export interface ModelCapability {
   supportsThinking: boolean // 支持 thinking mode
   supportsVision: boolean // 支持图像输入
   supportsTools: boolean // 支持工具调用
+  supportsPromptCaching: boolean // 支持 Anthropic prompt caching（GLM 不支持）
   maxToolCalls: number // 单次最大工具调用数
 
   // 成本
@@ -54,6 +55,7 @@ const DEFAULT_CAPABILITIES: ModelCapability[] = [
     supportsThinking: true,
     supportsVision: true,
     supportsTools: true,
+    supportsPromptCaching: false,
     maxToolCalls: 700,
     costPerMtok: { input: 1, output: 1 },
     isFree: false,
@@ -68,6 +70,7 @@ const DEFAULT_CAPABILITIES: ModelCapability[] = [
     supportsThinking: true,
     supportsVision: true,
     supportsTools: true,
+    supportsPromptCaching: false,
     maxToolCalls: 700,
     costPerMtok: { input: 1, output: 1 },
     isFree: false,
@@ -83,6 +86,7 @@ const DEFAULT_CAPABILITIES: ModelCapability[] = [
     supportsThinking: true,
     supportsVision: false,
     supportsTools: true,
+    supportsPromptCaching: false,
     maxToolCalls: 128,
     costPerMtok: { input: 0, output: 0 },
     isFree: true,
@@ -97,6 +101,7 @@ const DEFAULT_CAPABILITIES: ModelCapability[] = [
     supportsThinking: false,
     supportsVision: false,
     supportsTools: true,
+    supportsPromptCaching: false,
     maxToolCalls: 64,
     costPerMtok: { input: 0, output: 0 },
     isFree: true,
@@ -111,6 +116,7 @@ const DEFAULT_CAPABILITIES: ModelCapability[] = [
     supportsThinking: false,
     supportsVision: true,
     supportsTools: false,
+    supportsPromptCaching: false,
     maxToolCalls: 0,
     costPerMtok: { input: 0, output: 0 },
     isFree: true,

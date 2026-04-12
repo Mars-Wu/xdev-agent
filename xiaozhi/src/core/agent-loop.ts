@@ -16,6 +16,9 @@ import { microCompactMessages } from '../context/micro-compact';
 import { getTodoManager } from '../tools/todo-manager';
 import { getBackgroundTaskManager } from '../tools/background-tasks';
 import { configManager } from '../config';
+import { resetInterrupt } from '../utils/interrupt';
+import { CheckpointManager } from '../tools/checkpoint-manager';
+import { SubdirectoryHintTracker } from '../context/subdirectory-hints';
 
 const logger = createLogger('agent-loop');
 
@@ -60,6 +63,52 @@ function drainBackgroundNotifications(historyManager: MessageHistoryManager): vo
   } catch {
     // 后台任务管理器未初始化时忽略
   }
+}
+
+/**
+ * 规范化消息序列，确保符合 GLM API 要求：
+ *   1. 序列必须以 user 消息开头
+ *   2. user / assistant 必须严格交替（合并连续同角色消息）
+ *
+ * 压缩后的 recent 切片可能以 assistant 消息开头（agent loop 中途触发压缩），
+ * 导致 GLM 返回 400/1214 "messages 参数非法"。
+ */
+export function normalizeMessages(messages: Message[]): Message[] {
+  if (messages.length === 0) return messages;
+
+  const result: Message[] = [];
+  for (const msg of messages) {
+    if (result.length === 0) {
+      // 序列必须以 user 开头；跳过开头的 assistant 消息
+      if (msg.role !== 'user') continue;
+      result.push({ ...msg });
+    } else {
+      const last = result[result.length - 1];
+      if (msg.role === last.role) {
+        // 合并连续同角色消息的内容
+        const lastContent = last.content;
+        const newContent = msg.content;
+        if (typeof lastContent === 'string' && typeof newContent === 'string') {
+          last.content = `${lastContent}\n\n${newContent}`;
+        } else {
+          const blocks: ContentBlock[] = [
+            ...(Array.isArray(lastContent) ? lastContent : [{ type: 'text' as const, text: lastContent }]),
+            ...(Array.isArray(newContent) ? newContent : [{ type: 'text' as const, text: newContent }]),
+          ];
+          last.content = blocks;
+        }
+      } else {
+        result.push({ ...msg });
+      }
+    }
+  }
+
+  // 末尾若以 assistant 结尾（工具调用被截断），追加一条空 user 占位，否则 API 会报错
+  if (result.length > 0 && result[result.length - 1].role === 'assistant') {
+    result.push({ role: 'user', content: '[context continues]' });
+  }
+
+  return result;
 }
 
 /**
@@ -142,8 +191,24 @@ export async function runAgentLoop(
   const candidateTexts: string[] = [];  // 每轮有实质文本时收集，供选择器使用
   let roundsSinceTodoUpdate = 0; // p2-todo-reminder
 
+  // T5: 影子 Git 检查点管理器（每轮写操作后自动快照）
+  const checkpointMgr = new CheckpointManager(process.cwd());
+  let hadWriteOperation = false;
+  let checkpointLabel = 'agent work'; // 记录触发写操作时的任务描述
+
+  // T6: 子目录上下文懒加载
+  const hintTracker = new SubdirectoryHintTracker(process.cwd());
+
   while (turns < maxTurns) {
     turns++;
+    resetInterrupt(); // T10: 每轮开始时重置中断信号，防止上轮残留
+
+    // T5: 若上一轮有写操作，创建检查点快照（异步，不阻塞）
+    if (hadWriteOperation) {
+      hadWriteOperation = false;
+      checkpointMgr.createCheckpoint(`turn-${turns - 1}: ${checkpointLabel}`).catch(() => {});
+      checkpointLabel = 'agent work';
+    }
 
     // p3-notification-queue：注入后台任务通知（drain 未读队列）
     drainBackgroundNotifications(historyManager);
@@ -153,7 +218,9 @@ export async function runAgentLoop(
 
     // GLM API 只接受 user/assistant role；system 消息（历史摘要）合并进 system prompt
     const systemMessages = allMessages.filter(m => m.role === 'system');
-    const messages = allMessages.filter(m => m.role !== 'system');
+    const rawMessages = allMessages.filter(m => m.role !== 'system');
+    // 规范化：确保序列以 user 开头且 user/assistant 严格交替（压缩后可能违反）
+    const messages = normalizeMessages(rawMessages);
     const summaryContent = systemMessages
       .map(m => typeof m.content === 'string' ? m.content : '')
       .filter(Boolean)
@@ -203,12 +270,29 @@ export async function runAgentLoop(
     for (const call of response.toolCalls) {
       logger.info(`  → ${call.name}`);
       const result = await toolRegistry.execute(call.name, call.input);
+
+      // T5: 检测写操作（write/edit 工具），下轮触发检查点；同时记录当前用户请求作为描述
+      if (/^(?:write|edit)$/.test(call.name)) {
+        hadWriteOperation = true;
+        // 记录触发写操作时的最新用户消息（此时 turn N 的消息已在 history 中）
+        const latestUserMsg = historyManager.getMessages()
+          .filter(m => m.role === 'user' && typeof m.content === 'string')
+          .at(-1);
+        checkpointLabel = typeof latestUserMsg?.content === 'string'
+          ? latestUserMsg.content.slice(0, 80)
+          : 'agent work';
+      }
+
+      // T6: 检查工具调用路径，若访问新子目录则注入上下文提示
+      const hints = hintTracker.checkToolCall(call.name, call.input as Record<string, unknown>);
+      const toolOutput = result.success
+        ? (result.output || '(完成)')
+        : `Error: ${result.error || '未知错误'}`;
+
       toolResults.push({
         type: 'tool_result',
         tool_use_id: call.id,
-        content: result.success
-          ? (result.output || '(完成)')
-          : `Error: ${result.error || '未知错误'}`,
+        content: hints ? toolOutput + hints : toolOutput,
         is_error: !result.success,
       });
       // 检查是否有 todo 更新操作

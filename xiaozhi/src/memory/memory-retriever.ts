@@ -3,6 +3,7 @@
 
 import { createLogger } from '../utils/logger';
 import { getLLMClient } from '../core';
+import { configManager } from '../config';
 import {
   MemoryEntry,
   MemoryRetrievalRequest,
@@ -192,7 +193,7 @@ ${candidateList}
 
     try {
       const response = await this.llmClient.chatSync({
-        model: process.env.XIAOZHI_MODEL || 'glm-5',
+        model: configManager.getConfig().model.defaultModel,
         maxTokens: 500,
         messages: [{ role: 'user', content: prompt }],
         system: RELEVANCE_PROMPT,
@@ -291,14 +292,10 @@ ${candidateList}
   }
 
   /**
-   * 获取重要记忆
+   * 获取重要记忆（话题感知，透传给 MemoryManager）
    */
-  async getImportantMemories(limit: number = 10): Promise<MemoryEntry[]> {
-    const allMemories = await this.memoryManager.loadMemories();
-
-    return allMemories
-      .sort((a, b) => b.importance - a.importance)
-      .slice(0, limit);
+  async getImportantMemories(limit: number = 10, currentTopicId?: string): Promise<MemoryEntry[]> {
+    return this.memoryManager.getImportantMemories(limit, currentTopicId);
   }
 
   /**

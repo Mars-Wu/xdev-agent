@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { createLogger } from '../utils/logger';
+import { getXiaozhiHome } from '../config';
 import {
   MemoryEntry,
   MemoryType,
@@ -33,7 +34,7 @@ export class MemoryManager {
 
   constructor(config: Partial<MemorySystemConfig> = {}) {
     this.config = { ...DEFAULT_MEMORY_CONFIG, ...config };
-    const home = process.env.XIAOZHI_HOME || path.join(os.homedir(), '.xiaozhi');
+    const home = getXiaozhiHome();
     this.memoryDir = path.join(home, 'memory');
     this.memoryFile = path.join(this.memoryDir, 'MEMORY.md');
     this.semanticDir = path.join(this.memoryDir, 'semantic');
@@ -69,23 +70,14 @@ export class MemoryManager {
 
     const entries: MemoryEntry[] = [];
 
-    // 从 MEMORY.md 读取索引
-    try {
-      const content = await fs.readFile(this.memoryFile, 'utf-8');
-      const indexedEntries = this.parseMemoryIndex(content);
-      entries.push(...indexedEntries);
-    } catch (error) {
-      logger.debug('读取记忆索引失败:', error);
-    }
-
-    // 从分类目录读取
+    // 从分类目录读取（.md 文件是唯一数据源，MEMORY.md 仅用于展示）
     const dirs = [
       { dir: this.semanticDir, type: MemoryType.SEMANTIC },
       { dir: this.episodicDir, type: MemoryType.EPISODIC },
       { dir: this.proceduralDir, type: MemoryType.PROCEDURAL },
     ];
 
-    for (const { dir, type } of dirs) {
+    for (const { dir } of dirs) {
       try {
         const files = await fs.readdir(dir);
         for (const file of files) {
@@ -103,6 +95,7 @@ export class MemoryManager {
         }
       } catch {
         // 目录不存在，忽略
+        logger.debug(`记忆目录不存在，跳过`)
       }
     }
 
@@ -327,8 +320,8 @@ export class MemoryManager {
       try {
         await fs.unlink(filepath);
         this.indexCache.delete(id);
-      } catch {
-        // 忽略错误
+      } catch (err) {
+        logger.debug(`删除记忆文件 ${id} 失败:`, err)
       }
     }
   }
@@ -465,12 +458,32 @@ export class MemoryManager {
   }
 
   /**
-   * 获取重要记忆
+   * 获取重要记忆（话题感知过滤）
+   *
+   * 过滤策略：
+   *   1. 通用记忆（tags 中无任何话题 ID T_ 前缀）→ 始终注入
+   *   2. 与当前话题同标签的记忆 → 注入
+   *   3. 重要度 >= 8 的全局记忆 → 始终注入（高价值跨话题知识）
+   *   4. 其他话题的专属记忆 → 过滤掉，避免话题污染
    */
-  async getImportantMemories(limit: number = 15): Promise<MemoryEntry[]> {
+  async getImportantMemories(limit: number = 15, currentTopicId?: string): Promise<MemoryEntry[]> {
     const memories = await this.loadMemories();
-    memories.sort((a, b) => b.importance - a.importance);
-    return memories.slice(0, limit);
+
+    const filtered = currentTopicId
+      ? memories.filter(m => {
+          // 重要度 >= 8：全局知识，始终保留
+          if (m.importance >= 8) return true
+          // 检查是否有话题 tag
+          const topicTags = m.tags.filter(t => t.startsWith('T_'))
+          // 无话题 tag = 通用记忆，始终保留
+          if (topicTags.length === 0) return true
+          // 有话题 tag：只保留与当前话题相关的
+          return topicTags.includes(currentTopicId)
+        })
+      : memories
+
+    filtered.sort((a, b) => b.importance - a.importance)
+    return filtered.slice(0, limit)
   }
 
   /**
@@ -506,8 +519,8 @@ export class MemoryManager {
             await fs.unlink(path.join(dir, file));
           }
         }
-      } catch {
-        // 忽略
+      } catch (err) {
+        logger.debug(`清除记忆目录失败:`, err)
       }
     }
 
@@ -573,6 +586,13 @@ export class MemoryManager {
     const timestamp = Date.now().toString(36);
     const random = crypto.randomBytes(4).toString('hex');
     return `mem-${timestamp}-${random}`;
+  }
+
+  /**
+   * 获取所有记忆（供 Lint 使用）
+   */
+  async getAllMemories(): Promise<MemoryEntry[]> {
+    return this.loadMemories();
   }
 
   /**

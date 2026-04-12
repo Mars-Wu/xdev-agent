@@ -65,6 +65,10 @@ export type {
   Notification,
 } from './background-tasks'
 
+// Clarify 工具 (T9)
+export { CLARIFY_TOOL_DEFINITION, executeClarify, setClarifyCallback } from './clarify-tool'
+export type { ClarifyInput, ClarifyResult, ClarifyCallback } from './clarify-tool'
+
 // Worktree 工具 (s12)
 export {
   WorktreeManager,
@@ -97,6 +101,8 @@ import {
   createEnterWorktreeTool,
   createExitWorktreeTool,
 } from './worktree'
+import { CLARIFY_TOOL_DEFINITION, executeClarify } from './clarify-tool'
+import type { Tool } from './tool-interface'
 
 /**
  * 创建并初始化默认工具注册表
@@ -140,6 +146,15 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(createWorktreeTool())
   registry.register(createEnterWorktreeTool())
   registry.register(createExitWorktreeTool())
+
+  // Clarify 工具（T9 结构化多选题交互）
+  registry.register({
+    definition: CLARIFY_TOOL_DEFINITION as unknown as import('./tool-interface').ToolDefinition,
+    async execute(params: Record<string, unknown>): Promise<import('./tool-interface').ToolResult> {
+      const output = await executeClarify(params as any)
+      return { success: true, output }
+    },
+  } as Tool)
 
   return registry
 }

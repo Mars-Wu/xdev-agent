@@ -17,10 +17,9 @@
 
 ## 系统概述
 
-小智是一个基于 Claude CLI 的智能管家系统，主要特点：
+小智是一个基于 Zhipu GLM API 的智能管家系统（通过 Anthropic SDK 兼容接口调用），主要特点：
 
 - **双通道架构**：飞书（主通道）+ CLI（管理通道）
-- **专家系统**：9 位专家分工处理不同类型任务
 - **Gateway 控制平面**：WebSocket 实时 API
 - **插件系统**：事件总线驱动的可扩展架构
 - **定时任务**：Cron 表达式定时触发
@@ -34,13 +33,16 @@
 
 | 文件 | 功能 | 说明 |
 |-----|------|------|
-| `claude-native-agent.ts` | 小智 Agent | 消息处理、会话管理、Claude CLI 调用 |
+| `llm-client.ts` | LLM 客户端 | Anthropic SDK 封装，调用 Zhipu GLM API |
+| `agent-loop.ts` | Agent 循环 | 带工具调用的完整 LLM 交互循环 |
+| `message-history.ts` | 消息历史 | 会话上下文管理、压缩与恢复 |
+| `message-router.ts` | 消息路由 | 话题感知上下文路由（Stage 1 路由器）|
 
 **主要功能**：
 - 消息队列处理（飞书、Worker、Gateway）
-- 无状态 CLI 会话
+- 基于 GLM API 的流式 LLM 调用
 - 会话压缩与恢复
-- 超时重试机制
+- 话题级别的上下文隔离
 
 ### 2. Gateway 模块
 
@@ -80,29 +82,14 @@
 | `plugin:loaded` | 插件加载 |
 | `system:start` | 系统启动 |
 
-### 4. 专家系统 (Expert)
+### 4. Agent 模块 (Agent)
 
 | 文件 | 功能 | 说明 |
 |-----|------|------|
-| `manager.ts` | 专家管理器 | 专家注册、调度、状态管理 |
-| `executor.ts` | 专家执行器 | 独立进程执行专家任务 |
-| `session-manager.ts` | 会话管理 | 会话持久化、恢复 |
-| `token-counter.ts` | Token 计数 | 上下文 Token 估算 |
-| `context-pruning.ts` | 上下文裁剪 | 优先级消息保留 |
+| `in-process-agent.ts` | 进程内子 Agent | 隔离执行，供主 Agent 调用 |
+| `index.ts` | Agent 模块入口 | 导出 Agent 相关接口 |
 
-**可用专家**：
-
-| 专家 | 专长 | 适用场景 |
-|-----|------|---------|
-| coder | 代码编写、重构、调试 | 开发任务 |
-| analyst | 日志分析、数据诊断 | 问题排查 |
-| operator | 系统运维、部署 | 运维任务 |
-| researcher | 信息收集、调研 | 技术调研 |
-| refactor | 代码简化、架构重构 | 重构任务 |
-| business-planner | 商业规划 | 商业分析 |
-| product-manager | 产品规划 | 产品设计 |
-| marketing | 市场分析 | 营销策略 |
-| copywriter | 文案写作 | 内容创作 |
+> **TODO / 未实现**：多专家系统（9 位专家分工）在早期设计中规划，但目前尚未实现。当前使用单一 Agent 循环处理所有任务。
 
 ### 5. 配置系统 (Config)
 
@@ -171,7 +158,6 @@
 |-----|---------|------|
 | Node.js | >= 18.0.0 | 运行环境 |
 | npm | >= 9.0.0 | 包管理器 |
-| Claude CLI | 最新版 | AI 能力核心 |
 | SQLite3 | >= 3.0 | 数据存储 |
 
 ### 可选依赖
@@ -186,9 +172,6 @@
 ```bash
 # 检查 Node.js
 node --version  # 应 >= v18.0.0
-
-# 检查 Claude CLI
-claude --version
 
 # 检查 SQLite
 sqlite3 --version
@@ -282,8 +265,12 @@ XIAOZHI_GATEWAY_PORT=18789
 # HTTP 接收器端口
 XIAOZHI_HOOKS_PORT=8081
 
-# 模型配置
-XIAOZHI_MODEL=claude-sonnet-4-6
+# 模型配置（使用 Zhipu GLM API）
+ZHIPU_API_KEY=your_zhipu_api_key_here
+XIAOZHI_MODEL=glm-5-turbo
+XIAOZHI_ROUTER_MODEL=glm-4.7-flash
+XIAOZHI_SELECTOR_MODEL=glm-4.7-flash
+XIAOZHI_BACKGROUND_MODEL=glm-4.7-flash
 
 # 性能配置
 XIAOZHI_TIMEOUT=120000
@@ -291,47 +278,9 @@ XIAOZHI_MAX_RETRIES=3
 XIAOZHI_MAX_CONCURRENT=5
 ```
 
-### 配置文件
+### 系统提示词
 
-配置存储在 `~/.claude/settings.json`，由 Claude CLI 管理。
-
-主要配置项：
-
-```json
-{
-  "ANTHROPIC_MODEL": "claude-sonnet-4-6",
-  "permissions": {
-    "allow": [
-      "Bash(npm *)",
-      "Bash(node *)",
-      "Bash(git *)",
-      "Read(**)",
-      "Edit(**)"
-    ]
-  }
-}
-```
-
-### 专家配置
-
-专家配置存储在 `~/.xiaozhi/experts/<name>/CLAUDE.md`：
-
-```markdown
-# 代码专家
-
-你是小智的代码专家，专注于代码编写和调试。
-
-## 专长
-- 代码编写
-- Bug 修复
-- 代码重构
-
-## 工作方式
-1. 理解需求
-2. 设计方案
-3. 编写代码
-4. 测试验证
-```
+系统提示词存储在 `~/.xiaozhi/system-prompt.md`，可自定义小智的行为和人格。
 
 ---
 
@@ -481,9 +430,8 @@ ws.on('message', (data) => {
 journalctl --user -u xiaozhi -n 50
 
 # 常见原因：
-# - 缺少环境变量（检查 .env）
+# - 缺少环境变量（检查 .env，特别是 ZHIPU_API_KEY）
 # - 端口被占用（检查 8081, 18789）
-# - Claude CLI 未安装
 ```
 
 #### 2. 飞书消息无响应
@@ -547,12 +495,12 @@ systemctl --user start xiaozhi
 xiaozhi/
 ├── src/
 │   ├── index.ts                 # 主入口
-│   ├── core/                    # 核心模块
+│   ├── core/                    # 核心模块（LLM 客户端、Agent 循环、消息路由）
+│   ├── agent/                   # Agent 模块（in-process-agent）
 │   ├── gateway/                 # Gateway 控制平面
 │   ├── plugin-sdk/              # 插件 SDK
 │   ├── plugins/                 # 内置插件
 │   ├── cli/                     # CLI 客户端
-│   ├── expert/                  # 专家系统
 │   ├── config/                  # 配置系统
 │   ├── feishu/                  # 飞书模块
 │   ├── cron/                    # 定时任务
@@ -569,7 +517,7 @@ xiaozhi/
 
 ~/.xiaozhi/
 ├── files/                       # 用户文件
-├── experts/                     # 专家配置
+├── topics/                      # 话题级历史分桶
 ├── workspace/                   # 工作目录
 ├── system-prompt.md             # 系统提示词
 └── xiaozhi.db                   # 数据库

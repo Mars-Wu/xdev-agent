@@ -7,6 +7,7 @@ import { getMemoryExtractor } from '../memory/memory-extractor';
 import { getMemoryRetriever } from '../memory/memory-retriever';
 import { MemoryEntry, MemoryType, MemoryScope } from '../memory/types';
 import { COMPACT_PROMPT } from './prompt';
+import { configManager } from '../config';
 
 const logger = createLogger('compressor');
 
@@ -357,7 +358,7 @@ export class ContextCompressor {
 
     try {
       const response = await this.llmClient.chatSync({
-        model: process.env.XIAOZHI_MODEL || 'glm-5',
+        model: configManager.getConfig().model.defaultModel,
         maxTokens: 1500, // 更详细的摘要
         messages: [
           {
@@ -462,7 +463,7 @@ ${content.slice(0, 20000)}`,
 
       // 使用 LLM 提取记忆
       const response = await this.llmClient.chatSync({
-        model: process.env.XIAOZHI_MODEL || 'glm-5',
+        model: configManager.getConfig().model.defaultModel,
         maxTokens: 1000,
         messages: [
           {
@@ -560,7 +561,7 @@ ${content.slice(0, 10000)}
 
     try {
       const response = await this.llmClient.chatSync({
-        model: process.env.XIAOZHI_MODEL || 'glm-5',
+        model: configManager.getConfig().model.defaultModel,
         maxTokens: this.config.maxSummaryTokens,
         messages: [
           {

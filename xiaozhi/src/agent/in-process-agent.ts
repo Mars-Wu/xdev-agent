@@ -20,7 +20,8 @@ const logger = createLogger('in-process-agent');
 export type AgentType =
   | 'general-purpose'  // 通用 Agent
   | 'explore'          // 探索/研究 Agent
-  | 'plan';            // 规划 Agent
+  | 'plan'             // 规划 Agent
+  | 'coder';           // 编程专家 Agent（GLM-5.1）
 
 /**
  * Agent 配置
@@ -293,6 +294,21 @@ export class InProcessAgent {
 - 评估风险
 
 你的输出应该有条理、可执行。`,
+
+      'coder': `你是小智的编程专家 Agent ${this.config.name}。
+
+你专注于高质量的编程任务：
+- 编写、修改、重构代码
+- 调试和定位问题
+- 代码审查和优化
+- 编写测试
+
+执行准则：
+1. **先理解再行动**：用 bash/read_file 充分了解现有代码结构，再动手修改。
+2. **精确修改**：用 edit_file 做最小化改动，不破坏现有逻辑。
+3. **验证变更**：修改后运行相关测试（npm test / go test 等）确认无回归。
+4. **完整可运行**：交付的代码必须完整且可运行，不留占位符或 TODO。
+5. **说明理由**：每处关键改动附简短注释说明为何这样改。`,
     };
 
     let prompt = typePrompts[this.config.type];

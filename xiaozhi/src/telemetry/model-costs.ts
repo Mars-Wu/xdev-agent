@@ -48,40 +48,23 @@ export const MODEL_COSTS: Record<string, ModelCost> = {
     contextWindow: 200_000,
     maxOutput: 128_000,
   },
-
-  // Claude 系列（参考价格）
-  'claude-opus-4-6': {
-    id: 'claude-opus-4-6',
-    name: 'Claude Opus 4.6',
-    provider: 'anthropic',
-    inputCostPerMTok: 75,
-    outputCostPerMTok: 300,
-    cacheReadCostPerMTok: 7.5,
-    cacheWriteCostPerMTok: 100,
+  'glm-4.7-flash': {
+    id: 'glm-4.7-flash',
+    name: 'GLM-4.7-Flash',
+    provider: 'zhipu',
+    inputCostPerMTok: 0,    // 免费模型
+    outputCostPerMTok: 0,
     contextWindow: 200_000,
-    maxOutput: 32_000,
+    maxOutput: 128_000,
   },
-  'claude-sonnet-4-6': {
-    id: 'claude-sonnet-4-6',
-    name: 'Claude Sonnet 4.6',
-    provider: 'anthropic',
-    inputCostPerMTok: 15,
-    outputCostPerMTok: 75,
-    cacheReadCostPerMTok: 1.5,
-    cacheWriteCostPerMTok: 20,
-    contextWindow: 200_000,
-    maxOutput: 32_000,
-  },
-  'claude-haiku-4-5': {
-    id: 'claude-haiku-4-5',
-    name: 'Claude Haiku 4.5',
-    provider: 'anthropic',
-    inputCostPerMTok: 4,
-    outputCostPerMTok: 20,
-    cacheReadCostPerMTok: 0.4,
-    cacheWriteCostPerMTok: 5,
-    contextWindow: 200_000,
-    maxOutput: 32_000,
+  'glm-4-flash': {
+    id: 'glm-4-flash',
+    name: 'GLM-4-Flash',
+    provider: 'zhipu',
+    inputCostPerMTok: 0,    // 免费模型
+    outputCostPerMTok: 0,
+    contextWindow: 128_000,
+    maxOutput: 4096,
   },
 };
 

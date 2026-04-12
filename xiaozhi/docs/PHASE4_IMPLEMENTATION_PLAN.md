@@ -1,5 +1,7 @@
 # Phase 4：话题感知上下文路由系统 — 完整实施计划
 
+> ✅ **已完成** - Phase 4 已于 2026-04-06 实现，本文档作为历史参考。
+
 > **版本**：v1.0  
 > **日期**：2026-04  
 > **背景**：当前 `handleMessage()` 使用单一全局 `MessageHistoryManager`（1000条/18万token），长期运行导致跨话题上下文污染。典型案例：TqQuant（Python量化）被误答为 TypeScript AI 项目。  
@@ -22,7 +24,7 @@
 |------|------|------|
 | `src/core/message-history.ts` | 修改 | 增加 `serialize()` / `deserialize()` |
 | `src/storage/topic-graph.ts` | 新建 | 话题图 SQLite 操作层 |
-| `src/core/message-router.ts` | 新建 | Stage 1：glm-4-flash 路由 + context 组装 |
+| `src/core/message-router.ts` | 新建 | Stage 1：glm-4.7-flash 路由 + context 组装 |
 | `src/tools/topic-tools.ts` | 新建 | `save_memory` / `update_topic_summary` 工具 |
 | `src/core/background-memory.ts` | 新建 | 后台 LLM Pass（异步，不阻塞回复）|
 | `src/index.ts` | 修改 | `handleMessage()` 接入 3 阶段流水线 |
@@ -37,7 +39,7 @@
 飞书消息到达
   │
   ▼
-[Stage 1] Router + Assembler（glm-4-flash + 纯代码组装，~160ms）
+[Stage 1] Router + Assembler（glm-4.7-flash + 纯代码组装，~160ms）
   ├─ 输入：最近 N 条话题摘要列表 + 用户原始消息
   ├─ LLM 输出（JSON）：topicId, historyStrategy, historyHint,
   │                   relatedTopicIds, entityTags, confidence
@@ -61,7 +63,7 @@
 [Stage 3] 飞书回复（立即执行，不等待后台任务）
   │
   └─→（异步触发，不阻塞）
-[Background Pass] 后台 LLM（glm-4-flash，对话结束后异步执行）
+[Background Pass] 后台 LLM（glm-4.7-flash，对话结束后异步执行）
   ├─ 输入：Stage 2 执行摘要（executionTrace 压缩版）
   ├─ LLM 输出：新实体标签、话题图关系更新建议、episodic pattern
   └─ 写入：话题图 edges + MemoryManager（episodic 类型）
@@ -184,7 +186,7 @@ class TopicGraph {
 
 ### 4-C：消息路由器（Stage 1）
 
-**目标**：用 glm-4-flash 在独立、干净的上下文中分类消息，然后纯代码组装 context。
+**目标**：用 glm-4.7-flash 在独立、干净的上下文中分类消息，然后纯代码组装 context。
 
 **新建文件**：`src/core/message-router.ts`
 
@@ -576,7 +578,7 @@ describe('TopicGraph', () => {
 
 ```typescript
 describe('MessageRouter - routeAndAssemble', () => {
-  // Mock glm-4-flash 返回
+  // Mock glm-4.7-flash 返回
   const mockLLMClient = {
     chatSync: vi.fn(),
   };
@@ -1052,7 +1054,7 @@ describe('Phase 4 流水线集成测试', () => {
 
 ```typescript
 describe.skip('Phase 4 E2E（需要真实 API Key）', () => {
-  test('TqQuant 查询 → 正确路由到 T3（真实 glm-4-flash）', async () => {
+  test('TqQuant 查询 → 正确路由到 T3（真实 glm-4.7-flash）', async () => {
     // 需要 ZHIPU_API_KEY 环境变量
     const result = await routeAndAssemble(
       'TqQuant 的 TQSDK 怎么连接天勤行情？',
@@ -1106,8 +1108,8 @@ Phase 4 通过环境变量控制，支持灰度上线：
 # 启用话题路由（默认关闭，安全上线）
 XIAOZHI_TOPIC_ROUTING=true
 
-# 路由 LLM 模型（默认 glm-4-flash，成本低）
-XIAOZHI_ROUTER_MODEL=glm-4-flash
+# 路由 LLM 模型（默认 glm-4.7-flash，成本低）
+XIAOZHI_ROUTER_MODEL=glm-4.7-flash
 
 # 后台 Pass 开关（可独立关闭）
 XIAOZHI_BG_PASS=true

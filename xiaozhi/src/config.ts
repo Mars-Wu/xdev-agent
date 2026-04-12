@@ -19,10 +19,11 @@ const logger = createLogger('config');
  *   routerModel    — Stage 1 话题路由器（单次 JSON 分类）
  *   selectorModel  — Stage 2.5 回复选择器（选最佳候选段）
  *   backgroundModel— Background Pass（异步记忆提取/话题摘要）
+ *   coderModel     — 编程子 Agent（GLM-5.1，编程能力最强的智谱模型）
  *
  * 可在 ~/.xiaozhi/config.json 的 "model" 字段中覆盖，
  * 也可通过环境变量 XIAOZHI_MODEL / XIAOZHI_ROUTER_MODEL /
- * XIAOZHI_SELECTOR_MODEL / XIAOZHI_BACKGROUND_MODEL 覆盖。
+ * XIAOZHI_SELECTOR_MODEL / XIAOZHI_BACKGROUND_MODEL / XIAOZHI_CODER_MODEL 覆盖。
  */
 export interface ModelConfig {
   /** 主 Agent 模型（Stage 2）*/
@@ -33,6 +34,10 @@ export interface ModelConfig {
   selectorModel: string;
   /** 后台记忆/摘要模型（Background Pass）*/
   backgroundModel: string;
+  /** 编程子 Agent 模型（GLM-5，对齐 Claude Opus 编程能力）*/
+  coderModel: string;
+  /** 辅助任务模型（上下文压缩摘要、标题生成、路由分类，使用廉价快速模型）*/
+  auxiliaryModel?: string;
   fallbackModel?: string;
   maxTokens?: number;
 }
@@ -122,6 +127,10 @@ export interface MemoryConfig {
   maxFileSize: number;
   // 相关性阈值（0-1）
   relevanceThreshold: number;
+  // 是否启用记忆 Lint（定期健康检查）
+  lintEnabled: boolean;
+  // Lint 间隔天数（默认 7 天）
+  lintIntervalDays: number;
 }
 
 /**
@@ -147,6 +156,7 @@ const DEFAULT_CONFIG: XiaozhiConfig = {
     routerModel:     'glm-4.7-flash', // 话题路由：免费，单次 JSON，指令遵循强
     selectorModel:   'glm-4.7-flash', // 回复选择：免费，极简任务
     backgroundModel: 'glm-4.7-flash', // 后台记忆：异步，免费够用
+    coderModel:      'glm-5.1',       // 编程子 Agent：GLM-5.1，智谱旗舰编程模型
   },
   timeout: {
     apiTimeout: 120000,      // 2 分钟
@@ -191,6 +201,8 @@ const DEFAULT_CONFIG: XiaozhiConfig = {
     maxEntries: 100,
     maxFileSize: 25 * 1024,        // 25KB
     relevanceThreshold: 0.5,
+    lintEnabled: true,
+    lintIntervalDays: 7,           // 每周健康检查一次
   },
 };
 
@@ -255,6 +267,7 @@ class ConfigManager {
     if (process.env.XIAOZHI_ROUTER_MODEL)    modelOverride.routerModel     = process.env.XIAOZHI_ROUTER_MODEL;
     if (process.env.XIAOZHI_SELECTOR_MODEL)  modelOverride.selectorModel   = process.env.XIAOZHI_SELECTOR_MODEL;
     if (process.env.XIAOZHI_BACKGROUND_MODEL) modelOverride.backgroundModel = process.env.XIAOZHI_BACKGROUND_MODEL;
+    if (process.env.XIAOZHI_CODER_MODEL)      modelOverride.coderModel      = process.env.XIAOZHI_CODER_MODEL;
     if (Object.keys(modelOverride).length > 0) {
       config.model = { ...DEFAULT_CONFIG.model, ...modelOverride };
     }

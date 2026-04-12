@@ -7,6 +7,7 @@ import { GLM_CONFIG, DEFAULT_MODEL, resolveModelName } from './model-config'
 import { modelCapabilitiesManager, type ModelCapability } from './model-capabilities'
 import { analyzeTaskComplexity, parseThinkingOutput, type TaskComplexity } from './glm-extensions'
 import { MessageHistoryManager, type Message, toApiMessages } from './message-history'
+import { applyPromptCaching } from './prompt-cache'
 
 const logger = createLogger('llm-client')
 
@@ -97,10 +98,20 @@ export class LLMClient {
 
     try {
       // 构建请求参数
+      let apiMessages = toApiMessages(params.messages) as Anthropic.MessageParam[]
+
+      // T2: Prompt Caching（仅 Anthropic 原生端点支持，GLM 不支持）
+      if (capability.supportsPromptCaching) {
+        apiMessages = applyPromptCaching(
+          apiMessages as unknown as Record<string, unknown>[],
+        ) as unknown as Anthropic.MessageParam[]
+        logger.debug('已应用 Prompt Caching 断点')
+      }
+
       const requestParams: Anthropic.MessageCreateParams = {
         model: modelId,
         max_tokens: Math.min(params.maxTokens || this.defaultMaxTokens, capability.maxOutput),
-        messages: toApiMessages(params.messages) as Anthropic.MessageParam[],
+        messages: apiMessages,
         stream: true,
       }
 
@@ -216,10 +227,20 @@ export class LLMClient {
     logger.debug(`开始同步对话，模型: ${modelId}`)
 
     // 构建请求参数
+    let apiMessages = toApiMessages(params.messages) as Anthropic.MessageParam[]
+
+    // T2: Prompt Caching（仅 Anthropic 原生端点支持，GLM 不支持）
+    if (capability.supportsPromptCaching) {
+      apiMessages = applyPromptCaching(
+        apiMessages as unknown as Record<string, unknown>[],
+      ) as unknown as Anthropic.MessageParam[]
+      logger.debug('已应用 Prompt Caching 断点（chatSync）')
+    }
+
     const requestParams: Anthropic.MessageCreateParams = {
       model: modelId,
       max_tokens: Math.min(params.maxTokens || this.defaultMaxTokens, capability.maxOutput),
-      messages: toApiMessages(params.messages) as Anthropic.MessageParam[],
+      messages: apiMessages,
     }
 
     if (params.system) {

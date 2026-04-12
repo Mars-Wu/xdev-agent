@@ -540,6 +540,7 @@ export class TaskSystem {
         this.save().catch(err => logger.error('自动保存失败:', err))
       }
     }, this.config.autoSaveInterval)
+    process.once('exit', () => this.stopAutoSave())
   }
 
   /**

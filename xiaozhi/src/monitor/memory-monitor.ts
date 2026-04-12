@@ -22,6 +22,7 @@ export class MemoryMonitor {
 
   start(): void {
     this.timer = setInterval(() => this.check(), this.interval);
+    process.once('exit', () => this.stop());
     logger.info(`内存监控已启动 (阈值: ${this.threshold}%, 告警间隔: 5分钟)`);
   }
 

@@ -1,16 +1,20 @@
 // src/core/vision.ts
-// 图片视觉分析：使用智谱原生 OpenAI 兼容 API（glm-4v-flash）
+// 图片视觉分析：使用智谱原生 OpenAI 兼容 API（glm-5v-turbo）
 // 注意：Anthropic 兼容端点不支持视觉，必须走原生端点
 
 import { createLogger } from '../utils/logger';
+import { getDefaultVisionModelId } from './model-catalog';
 
 const logger = createLogger('vision');
 
 const ZHIPU_VISION_API = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-const VISION_MODEL = 'glm-4.6v-flash';
+
+function getVisionModel(): string {
+  return getDefaultVisionModelId(process.env.XIAOZHI_VISION_MODEL);
+}
 
 /**
- * 用智谱 glm-4v-flash 分析图片，返回文字描述
+ * 用智谱视觉模型分析图片，返回文字描述
  * @param imageBuffer 图片二进制数据
  * @param mediaType MIME 类型（如 image/jpeg）
  * @param userQuestion 用户附带的文字问题（可选）
@@ -34,7 +38,8 @@ export async function analyzeImage(
     : '请详细描述这张图片的内容，包括文字、数据、图表等所有可见信息。';
 
   const payload = {
-    model: VISION_MODEL,
+    model: getVisionModel(),
+    thinking: { type: 'disabled' },
     messages: [
       {
         role: 'user',

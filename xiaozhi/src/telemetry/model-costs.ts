@@ -1,5 +1,7 @@
 // src/telemetry/model-costs.ts
-// 模型成本配置
+// 模型成本配置：从统一模型目录派生
+
+import { listTextCatalogModels } from '../core/model-catalog';
 
 /**
  * 模型成本配置（每百万 tokens，单位：元）
@@ -28,45 +30,20 @@ export interface ModelCost {
 /**
  * 模型成本配置表
  */
-export const MODEL_COSTS: Record<string, ModelCost> = {
-  // 智谱 GLM 系列
-  'glm-5': {
-    id: 'glm-5',
-    name: 'GLM-5',
-    provider: 'zhipu',
-    inputCostPerMTok: 1,    // 智谱编程计划
-    outputCostPerMTok: 1,
-    contextWindow: 200_000,
-    maxOutput: 128_000,
-  },
-  'glm-5-turbo': {
-    id: 'glm-5-turbo',
-    name: 'GLM-5-Turbo',
-    provider: 'zhipu',
-    inputCostPerMTok: 1,
-    outputCostPerMTok: 1,
-    contextWindow: 200_000,
-    maxOutput: 128_000,
-  },
-  'glm-4.7-flash': {
-    id: 'glm-4.7-flash',
-    name: 'GLM-4.7-Flash',
-    provider: 'zhipu',
-    inputCostPerMTok: 0,    // 免费模型
-    outputCostPerMTok: 0,
-    contextWindow: 200_000,
-    maxOutput: 128_000,
-  },
-  'glm-4-flash': {
-    id: 'glm-4-flash',
-    name: 'GLM-4-Flash',
-    provider: 'zhipu',
-    inputCostPerMTok: 0,    // 免费模型
-    outputCostPerMTok: 0,
-    contextWindow: 128_000,
-    maxOutput: 4096,
-  },
-};
+export const MODEL_COSTS: Record<string, ModelCost> = Object.fromEntries(
+  listTextCatalogModels().map((entry) => [
+    entry.id,
+    {
+      id: entry.id,
+      name: entry.name,
+      provider: 'zhipu',
+      inputCostPerMTok: entry.costPerMtok.input,
+      outputCostPerMTok: entry.costPerMtok.output,
+      contextWindow: entry.contextWindow,
+      maxOutput: entry.maxOutput,
+    },
+  ]),
+);
 
 /**
  * 获取模型成本配置

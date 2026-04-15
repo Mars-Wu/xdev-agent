@@ -89,6 +89,9 @@ export class HooksReceiver {
   private server?: ReturnType<express.Application['listen']>;
   private apiToken: string | null = null;
 
+  // 全流程测试管道：注入消息，回复照常发往飞书，只返回耗时
+  private messagePipeline?: (chatId: string, content: string) => Promise<void>;
+
   // 生命周期钩子
   private hookConfig: HookConfig = {
     enabled: true,
@@ -107,6 +110,11 @@ export class HooksReceiver {
       logger.info('API Token 认证已启用');
     }
     this.setupRoutes();
+  }
+
+  /** 注入完整消息处理管道（由 index.ts 调用） */
+  setMessagePipeline(pipeline: (chatId: string, content: string) => Promise<void>): void {
+    this.messagePipeline = pipeline;
   }
 
   /**
@@ -131,6 +139,19 @@ export class HooksReceiver {
     }
 
     next();
+  }
+
+  /**
+   * 严格要求必须配置并提供 API Token
+   * 用于会触发外部副作用的测试入口，避免在未配置鉴权时被误用
+   */
+  private requireStrictAuthToken(req: Request, res: Response, next: NextFunction): void {
+    if (!this.apiToken) {
+      res.status(503).json({ error: 'XIAOZHI_API_TOKEN 未配置，测试入口已禁用' });
+      return;
+    }
+
+    this.requireAuthToken(req, res, next);
   }
 
   /**
@@ -194,7 +215,7 @@ export class HooksReceiver {
     this.app.post('/api/hooks/:type/register', this.requireAuthToken.bind(this), this.handleRegisterHook.bind(this));
 
     // 测试 API
-    this.app.post('/test/message', this.requireAuthToken.bind(this), this.handleTestMessage.bind(this));
+    this.app.post('/test/message', this.requireStrictAuthToken.bind(this), this.handleTestMessage.bind(this));
   }
 
   // ==================== API 实现 ====================
@@ -375,31 +396,50 @@ export class HooksReceiver {
   }
 
   /**
-   * POST /test/message - 测试消息
+   * POST /test/message - 全流程测试
+   * 注入消息到小智完整处理管道（话题路由→记忆注入→agent loop→发送飞书）
+   * 回复照常发往飞书，本接口只返回耗时和阶段信息
    */
   private async handleTestMessage(req: Request, res: Response): Promise<void> {
-    const { content } = req.body;
+    const { chatId, content } = req.body;
 
-    if (!content) {
-      res.status(400).json({ error: 'Missing content' });
+    if (typeof chatId !== 'string' || typeof content !== 'string') {
+      res.status(400).json({ error: 'chatId and content must both be strings' });
       return;
     }
 
-    if (!this.llmClient) {
-      res.status(503).json({ error: 'LLM 客户端未初始化' });
+    const trimmedChatId = chatId.trim();
+    const trimmedContent = content.trim();
+
+    if (!trimmedChatId || !trimmedContent) {
+      res.status(400).json({ error: 'Missing chatId or content' });
       return;
     }
+
+    if (!this.messagePipeline) {
+      res.status(503).json({ error: '消息管道未初始化，服务尚未就绪' });
+      return;
+    }
+
+    const startTime = Date.now();
+    logger.info(`[Test] 注入测试消息 chatId=${trimmedChatId} content="${trimmedContent.slice(0, 50)}"`);
 
     try {
-      const response = await this.llmClient.chatSync({
-        model: configManager.getConfig().model.defaultModel,
-        maxTokens: 1000,
-        messages: [{ role: 'user', content }],
+      await this.messagePipeline(trimmedChatId, trimmedContent);
+      const durationMs = Date.now() - startTime;
+      logger.info(`[Test] 完成 duration=${durationMs}ms`);
+      res.json({
+        status: 'ok',
+        duration_ms: durationMs,
+        note: '回复已通过正常飞书渠道发送，请在飞书查看',
       });
-      res.json({ status: 'ok', response: response.content });
     } catch (error) {
-      logger.error('[Test] 测试消息处理失败:', error);
-      res.status(500).json({ error: '测试消息处理失败' });
+      const durationMs = Date.now() - startTime;
+      logger.error('[Test] 处理失败:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : String(error),
+        duration_ms: durationMs,
+      });
     }
   }
 

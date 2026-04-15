@@ -219,6 +219,7 @@ async function main() {
 
   // 5. HTTP 接收器
   const hooksReceiver = new HooksReceiver();
+  hooksReceiver.setLLMClient(llmClient);
   hooksReceiver.listen(hooksPort);
   logger.info(`HTTP接收器已启动，端口 ${hooksPort}`);
 
@@ -241,6 +242,7 @@ async function main() {
     enableCompression: true,
     compressionThreshold: 0.9,
   });
+  hooksReceiver.setHistoryManager(historyManager);
 
   // 8.1 预初始化话题图（提前建表，避免首条消息延迟）
   getTopicGraph();
@@ -260,6 +262,22 @@ async function main() {
     // 用 AsyncLocalStorage 将 chatId 绑定到整个异步调用链，并发安全（无全局变量竞争）
     await chatIdStorage.run(msg.chatId, () =>
       handleMessage(msg, llmClient, feishuClient, historyManager, storage, toolRegistry),
+    );
+  });
+
+  // 9.1 注入全流程测试管道（/test/message 端点使用）
+  // 构造和真实飞书消息完全相同的 FeishuMessage，走同一条处理链路，回复照常发往飞书
+  hooksReceiver.setMessagePipeline(async (chatId: string, content: string) => {
+    const fakeMsg: import('./feishu/types').FeishuMessage = {
+      messageId: `test_${Date.now()}`,
+      chatId,
+      userId: 'test-user',
+      content,
+      msgType: 'text',
+      timestamp: new Date(),
+    };
+    await chatIdStorage.run(chatId, () =>
+      handleMessage(fakeMsg, llmClient, feishuClient, historyManager, storage, toolRegistry),
     );
   });
 
@@ -360,12 +378,7 @@ async function main() {
   }
   logger.info(`插件: ${pluginStats.total} 个已加载`);
   logger.info('==========================================');
-  logger.info('可用命令:');
-  logger.info('  /compact  - 压缩会话上下文');
-  logger.info('  /stats    - 查看会话统计');
-  logger.info('  /health   - 健康检查');
-  logger.info('  /reset    - 重置会话');
-  logger.info('  /model    - 切换模型');
+  logger.info('飞书入口 slash 命令: 暂未启用（收到 /... 会返回“未知命令”）');
   logger.info('==========================================');
   logger.info('Gateway 端点:');
   logger.info(`  - WebSocket: ws://${GATEWAY_HOST}:${GATEWAY_PORT}`);

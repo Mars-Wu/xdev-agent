@@ -37,6 +37,20 @@ export { browserAdapterTool, createBrowserAdapterTool } from './browser-adapter'
 // Phase 3 工具
 export { agentTool, createAgentTool } from './agent-tool'
 export { scheduleTool, createScheduleTool, stopAllScheduledJobs } from './schedule-tool'
+export {
+  createLarkTools,
+  createLarkAuthStatusTool,
+  createLarkCalendarAgendaTool,
+  createLarkCalendarCreateTool,
+  createLarkCalendarFreebusyTool,
+  createLarkContactSearchUserTool,
+  createLarkDocsCreateTool,
+  createLarkDocsFetchTool,
+  createLarkDocsSearchTool,
+  createLarkDocsUpdateTool,
+  createLarkImSendTool,
+  createLarkImSearchMessagesTool,
+} from './lark'
 
 // Skill 工具
 export { createSkillTool, createListSkillsTool, createGetSkillInfoTool } from '../skills/skill-tool'
@@ -92,6 +106,7 @@ import { webFetchTool } from './web-fetch-tool'
 import { browserAdapterTool } from './browser-adapter'
 import { agentTool } from './agent-tool'
 import { scheduleTool } from './schedule-tool'
+import { createLarkTools } from './lark'
 import { createSkillTool, createListSkillsTool } from '../skills/skill-tool'
 import { createTodoTool, createStartTodoTool, createCompleteTodoTool } from './todo-tool'
 import { createTaskTool, createReadyTasksTool } from './task-tool'
@@ -124,6 +139,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // Phase 3 工具
   registry.register(agentTool)
   registry.register(scheduleTool)
+  registry.registerAll(createLarkTools())
 
   // Skill 工具（使用免费模型）
   registry.register(createSkillTool())

@@ -20,6 +20,8 @@ import { createLogger } from '../utils/logger';
 
 const logger = createLogger('feishu');
 
+type JsonRecord = Record<string, unknown>;
+
 // 重连配置
 const RECONNECT_CONFIG = {
   maxRetries: 10,           // 最大重连次数
@@ -461,13 +463,7 @@ export class FeishuClient {
   }
 
   private parseContent(content: string): string {
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed.text) return parsed.text;
-      return content;
-    } catch {
-      return content;
-    }
+    return parseFeishuMessageContent(content);
   }
 
   private formatContent(reply: FeishuReply): string {
@@ -537,4 +533,78 @@ export class FeishuClient {
     }
     return token;
   }
+}
+
+export function parseFeishuMessageContent(content: string): string {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    const text = extractMessageText(parsed);
+    return text || content;
+  } catch {
+    return content;
+  }
+}
+
+function extractMessageText(value: unknown): string {
+  if (!isRecord(value)) {
+    return '';
+  }
+
+  if (typeof value.text === 'string' && value.text.trim()) {
+    return value.text;
+  }
+
+  const richText = extractRichText(value.zh_cn) || extractRichText(value.en_us) || extractRichText(value)
+  return richText;
+}
+
+function extractRichText(value: unknown): string {
+  if (!isRecord(value)) {
+    return '';
+  }
+
+  const title = typeof value.title === 'string' ? value.title.trim() : ''
+  const content = Array.isArray(value.content) ? value.content : []
+
+  const paragraphs = content
+    .map((paragraph) => extractParagraphText(paragraph))
+    .filter((paragraph): paragraph is string => paragraph.length > 0)
+
+  if (title) {
+    paragraphs.unshift(title)
+  }
+
+  return paragraphs.join('\n')
+}
+
+function extractParagraphText(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return ''
+  }
+
+  return value
+    .map((element) => extractElementText(element))
+    .filter((text): text is string => text.length > 0)
+    .join('')
+    .trim()
+}
+
+function extractElementText(value: unknown): string {
+  if (!isRecord(value) || typeof value.tag !== 'string') {
+    return ''
+  }
+
+  if (typeof value.text === 'string') {
+    return value.text
+  }
+
+  if (value.tag === 'a' && typeof value.href === 'string') {
+    return typeof value.text === 'string' ? value.text : value.href
+  }
+
+  return ''
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

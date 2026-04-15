@@ -182,7 +182,7 @@ export function selectBestModel(
 
   if (suitable.length === 0) {
     // 没有合适的，返回默认
-    return capabilities.find((c) => c.id === 'glm-5') || capabilities[0]
+    return capabilities.find((c) => c.id === 'glm-5-turbo') || capabilities[0]
   }
 
   // 按成本效益排序

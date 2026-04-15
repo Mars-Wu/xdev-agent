@@ -14,6 +14,24 @@ export {
   type ModelConfig,
 } from './model-config'
 
+// 模型目录
+export {
+  MODEL_CATALOG,
+  DEFAULT_MAIN_MODEL,
+  DEFAULT_FAST_MODEL,
+  DEFAULT_AUX_MODEL,
+  DEFAULT_CODER_MODEL,
+  DEFAULT_VISION_MODEL,
+  getDefaultVisionModelId,
+  getModelCatalogEntry,
+  listTextCatalogModels,
+  listVisionCatalogModels,
+  resolveCatalogModelId,
+  type ModelCatalogEntry,
+  type TextModelCatalogEntry,
+  type VisionModelCatalogEntry,
+} from './model-catalog'
+
 // 模型能力
 export {
   ModelCapabilitiesManager,

@@ -6,6 +6,11 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { createLogger } from './utils/logger';
+import {
+  DEFAULT_CODER_MODEL,
+  DEFAULT_FAST_MODEL,
+  DEFAULT_MAIN_MODEL,
+} from './core/model-catalog';
 
 const logger = createLogger('config');
 
@@ -19,7 +24,7 @@ const logger = createLogger('config');
  *   routerModel    — Stage 1 话题路由器（单次 JSON 分类）
  *   selectorModel  — Stage 2.5 回复选择器（选最佳候选段）
  *   backgroundModel— Background Pass（异步记忆提取/话题摘要）
- *   coderModel     — 编程子 Agent（GLM-5.1，编程能力最强的智谱模型）
+ *   coderModel     — 编程子 Agent（GLM-5，当前 code plan 下更稳）
  *
  * 可在 ~/.xiaozhi/config.json 的 "model" 字段中覆盖，
  * 也可通过环境变量 XIAOZHI_MODEL / XIAOZHI_ROUTER_MODEL /
@@ -152,11 +157,11 @@ export interface XiaozhiConfig {
 
 const DEFAULT_CONFIG: XiaozhiConfig = {
   model: {
-    defaultModel:    'glm-5-turbo',   // 主 Agent：OpenClaw/龙虾场景专项优化
-    routerModel:     'glm-4.7-flash', // 话题路由：免费，单次 JSON，指令遵循强
-    selectorModel:   'glm-4.7-flash', // 回复选择：免费，极简任务
-    backgroundModel: 'glm-4.7-flash', // 后台记忆：异步，免费够用
-    coderModel:      'glm-5.1',       // 编程子 Agent：GLM-5.1，智谱旗舰编程模型
+    defaultModel:    DEFAULT_MAIN_MODEL, // 主 Agent：OpenClaw/龙虾场景专项优化
+    routerModel:     DEFAULT_FAST_MODEL, // 话题路由：免费，单次 JSON，指令遵循强
+    selectorModel:   DEFAULT_FAST_MODEL, // 回复选择：免费，极简任务
+    backgroundModel: DEFAULT_FAST_MODEL, // 后台记忆：异步，免费够用
+    coderModel:      DEFAULT_CODER_MODEL, // 编程子 Agent：code plan 下实测更稳，当前账号会映射到旗舰 coding 模型
   },
   timeout: {
     apiTimeout: 120000,      // 2 分钟

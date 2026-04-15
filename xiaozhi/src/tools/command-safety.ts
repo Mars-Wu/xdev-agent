@@ -13,18 +13,20 @@ export interface SafetyCheckResult {
  * 硬阻断模式：命中则直接拒绝执行
  */
 const HARD_BLOCK_PATTERNS: Array<[RegExp, string]> = [
-  [/\brm\s+(-[^\s]*\s+)*\/(?:\s|$)/, '根路径删除'],
+  [/\brm\s+(-[^\s]*\s+)*\/(?:\s|$)/, '根路径删除 (rm -rf /)'],
   [/\brm\s+--recursive\s+\/(?:\s|$)/, '根路径递归删除（--recursive）'],
   [/\bmkfs\b/, '格式化文件系统'],
   [/\bdd\s+.*\bif=/, '磁盘复制（dd）'],
   [/>\s*\/dev\/sd/, '写入块设备'],
-  [/:\(\)\s*\{[^}]*:\s*\|[^}]*:\s*&/, 'Fork Bomb'],
+  [/\beval(?:\s|$)/, 'eval 执行'],
+  [/\b(?:curl|wget)\b[\s\S]*?\|\s*(?:bash|sh)\b/, '管道执行远程脚本'],
+  [/:\(\)\s*\{[^}]*:\s*\|[^}]*:\s*&/, 'fork bomb'],
   [/\/dev\/tcp\//, '网络反弹（/dev/tcp）'],
   [/\/dev\/udp\//, '网络反弹（/dev/udp）'],
   [/\bDROP\s+DATABASE\b/i, 'SQL DROP DATABASE'],
   [/\bDROP\s+TABLE\b/i, 'SQL DROP TABLE'],
   // 变量参数转换注入（已有，保留）
-  [/\$\{[^}]*@[PQEAa]\}/, 'Shell 参数转换注入'],
+  [/\$\{[^}]*@[PQEAa]\}/, 'Shell 参数转换注入 (${var@P})'],
   // 写入关键系统文件
   [/>\s*\/etc\/(?:passwd|shadow|sudoers)/, '写入关键系统配置文件'],
 ]

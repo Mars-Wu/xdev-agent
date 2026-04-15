@@ -5,12 +5,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createLogger } from '../utils/logger'
 import { GLM_CONFIG } from './model-config'
+import { DEFAULT_AUX_MODEL } from './model-catalog'
 import { configManager } from '../config'
 
 const logger = createLogger('aux-client')
-
-// 默认辅助模型（免费快速）
-const DEFAULT_AUX_MODEL = 'glm-4.7-flash'
 
 export interface AuxMessage {
   role: 'user' | 'assistant'

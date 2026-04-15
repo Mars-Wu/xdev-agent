@@ -4,6 +4,7 @@
 import { createLogger } from '../utils/logger'
 import { modelCapabilitiesManager, type ModelCapability } from './model-capabilities'
 import { analyzeTaskComplexity, type TaskComplexity } from './glm-extensions'
+import { DEFAULT_MAIN_MODEL } from './model-catalog'
 
 const logger = createLogger('model-selector')
 
@@ -36,7 +37,7 @@ export interface ModelSelectorConfig {
  * 默认配置
  */
 const DEFAULT_CONFIG: ModelSelectorConfig = {
-  defaultModel: 'glm-5-turbo',
+  defaultModel: DEFAULT_MAIN_MODEL,
   allowAutoSwitch: true,
   complexityThresholds: {
     simple: 500,

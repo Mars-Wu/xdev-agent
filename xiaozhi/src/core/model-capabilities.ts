@@ -5,7 +5,12 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { createLogger } from '../utils/logger'
-import { AVAILABLE_MODELS, type ModelConfig } from './model-config'
+import {
+  DEFAULT_MAIN_MODEL,
+  listTextCatalogModels,
+  resolveCatalogModelId,
+  type TextModelCatalogEntry,
+} from './model-catalog'
 
 const logger = createLogger('model-capabilities')
 
@@ -44,85 +49,27 @@ export interface ModelCapability {
 /**
  * 默认能力配置
  */
-const DEFAULT_CAPABILITIES: ModelCapability[] = [
-  // 付费主力模型
-  {
-    id: 'glm-5',
-    name: 'GLM-5',
-    provider: 'glm',
-    contextWindow: 200_000,
-    maxOutput: 128_000,
-    supportsThinking: true,
-    supportsVision: true,
-    supportsTools: true,
-    supportsPromptCaching: false,
-    maxToolCalls: 700,
-    costPerMtok: { input: 1, output: 1 },
-    isFree: false,
-    aliases: ['glm5', 'g5', 'glm-5'],
-  },
-  {
-    id: 'glm-5-turbo',
-    name: 'GLM-5-Turbo',
-    provider: 'glm',
-    contextWindow: 200_000,
-    maxOutput: 128_000,
-    supportsThinking: true,
-    supportsVision: true,
-    supportsTools: true,
-    supportsPromptCaching: false,
-    maxToolCalls: 700,
-    costPerMtok: { input: 1, output: 1 },
-    isFree: false,
-    aliases: ['turbo', 'g5t', 'glm-5-turbo'],
-  },
-  // 免费模型
-  {
-    id: 'glm-4.7-flash',
-    name: 'GLM-4.7-Flash',
-    provider: 'glm',
-    contextWindow: 128_000,
-    maxOutput: 65_536,
-    supportsThinking: true,
-    supportsVision: false,
-    supportsTools: true,
-    supportsPromptCaching: false,
-    maxToolCalls: 128,
-    costPerMtok: { input: 0, output: 0 },
-    isFree: true,
-    aliases: ['4.7-flash', 'g4.7f', 'flash'],
-  },
-  {
-    id: 'glm-4-flash',
-    name: 'GLM-4-Flash',
-    provider: 'glm',
-    contextWindow: 128_000,
-    maxOutput: 4096,
-    supportsThinking: false,
-    supportsVision: false,
-    supportsTools: true,
-    supportsPromptCaching: false,
-    maxToolCalls: 64,
-    costPerMtok: { input: 0, output: 0 },
-    isFree: true,
-    aliases: ['4-flash', 'g4f', 'glm-4-flash-250414'],
-  },
-  {
-    id: 'glm-4v-flash',
-    name: 'GLM-4V-Flash',
-    provider: 'glm',
-    contextWindow: 8192,
-    maxOutput: 1024,
-    supportsThinking: false,
-    supportsVision: true,
-    supportsTools: false,
-    supportsPromptCaching: false,
-    maxToolCalls: 0,
-    costPerMtok: { input: 0, output: 0 },
-    isFree: true,
-    aliases: ['4v-flash', 'g4vf', 'v-flash', 'vision-flash'],
-  },
-]
+function toCapability(entry: TextModelCatalogEntry): ModelCapability {
+  return {
+    id: entry.id,
+    name: entry.name,
+    provider: entry.provider,
+    contextWindow: entry.contextWindow,
+    maxOutput: entry.maxOutput,
+    supportsThinking: entry.supportsThinking,
+    supportsVision: entry.supportsVision,
+    supportsTools: entry.supportsTools,
+    supportsPromptCaching: entry.supportsPromptCaching,
+    maxToolCalls: entry.maxToolCalls,
+    costPerMtok: entry.costPerMtok,
+    isFree: entry.isFree,
+    aliases: entry.aliases,
+  }
+}
+
+const DEFAULT_CAPABILITIES: ModelCapability[] = listTextCatalogModels({
+  transport: 'anthropic-messages',
+}).map(toCapability)
 
 /**
  * 能力缓存路径
@@ -231,45 +178,17 @@ export class ModelCapabilitiesManager {
       if (capability) return capability
     }
 
-    // 模糊匹配
-    const fuzzyMatch = this.fuzzyMatch(input)
-    if (fuzzyMatch) return fuzzyMatch
+    const resolvedId = resolveCatalogModelId(input, {
+      kind: 'text',
+      transport: 'anthropic-messages',
+      fallback: DEFAULT_MAIN_MODEL,
+    })
+    capability = this.capabilities.get(resolvedId)
+    if (capability && resolvedId !== DEFAULT_MAIN_MODEL) return capability
 
     // 未找到，返回默认
-    logger.warn(`Unknown model: ${input}, using default: glm-5`)
-    return this.capabilities.get('glm-5')!
-  }
-
-  /**
-   * 模糊匹配模型名称
-   */
-  private fuzzyMatch(input: string): ModelCapability | null {
-    const lower = input.toLowerCase()
-
-    // glm-5 / glm5 -> glm-5
-    if (lower.includes('glm') && lower.includes('5')) {
-      if (lower.includes('turbo')) {
-        return this.capabilities.get('glm-5-turbo') || null
-      }
-      return this.capabilities.get('glm-5') || null
-    }
-
-    // glm-4.7-flash / 4.7-flash -> glm-4.7-flash
-    if ((lower.includes('4.7') || lower.includes('47')) && lower.includes('flash')) {
-      return this.capabilities.get('glm-4.7-flash') || null
-    }
-
-    // glm-4v-flash / 4v-flash / vision-flash -> glm-4v-flash
-    if ((lower.includes('4v') || lower.includes('vision')) && lower.includes('flash')) {
-      return this.capabilities.get('glm-4v-flash') || null
-    }
-
-    // glm-4-flash / 4-flash -> glm-4-flash
-    if (lower.includes('4') && lower.includes('flash') && !lower.includes('4.') && !lower.includes('4v')) {
-      return this.capabilities.get('glm-4-flash') || null
-    }
-
-    return null
+    logger.warn(`Unknown model: ${input}, using default: ${DEFAULT_MAIN_MODEL}`)
+    return this.capabilities.get(DEFAULT_MAIN_MODEL)!
   }
 
   /**

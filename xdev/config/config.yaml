@@ -1,0 +1,39 @@
+# config/config.yaml
+# AI管家艾克斯配置文件
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  hooks_port: 8081
+
+xdev:
+  model: "glm-5-turbo"
+  max_context_messages: 50
+  compress_threshold: 40
+
+feishu:
+  app_id: "${FEISHU_APP_ID}"
+  app_secret: "${FEISHU_APP_SECRET}"
+  use_websocket: true  # 开发时使用WebSocket，生产环境可使用Webhook
+  # webhook_path: "/webhook/feishu"
+
+worker:
+  base_dir: "/var/lib/xdev"
+  scripts_dir: "/var/lib/xdev/scripts"
+  max_workers_per_session: 5
+  default_timeout: 3600
+  default_model: "glm-5-turbo"
+
+storage:
+  type: "sqlite"
+  sqlite:
+    path: "/var/lib/xdev/data/xdev.db"
+  # redis:
+  #   host: "localhost"
+  #   port: 6379
+  #   db: 0
+
+logging:
+  level: "info"
+  format: "json"
+  output: "/var/log/xdev/xdev.log"

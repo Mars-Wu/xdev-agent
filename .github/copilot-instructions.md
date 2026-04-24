@@ -1,12 +1,12 @@
-# Copilot Instructions for claudeClaw / 小智
+# Copilot Instructions for claudeClaw / 艾克斯
 
 ## Project Overview
 
-**小智 (Xiaozhi)** is an autonomous AI butler service running as a systemd user service. It connects to the Zhipu GLM API (Claude-compatible endpoint) and communicates with users via Feishu (Lark) as the primary channel, with a CLI for management. The main application lives in `xiaozhi/`.
+**艾克斯 (Xdev)** is an autonomous AI butler service running as a systemd user service. It connects to the Zhipu GLM API (Claude-compatible endpoint) and communicates with users via Feishu (Lark) as the primary channel, with a CLI for management. The main application lives in `xdev/`.
 
 ## Build, Test & Service Commands
 
-All commands run from `xiaozhi/`:
+All commands run from `xdev/`:
 
 ```bash
 npm run build          # tsc + copy builtin skills to dist/
@@ -22,9 +22,9 @@ npm run test:coverage  # v8 coverage → text/json/html
 
 Service management:
 ```bash
-systemctl --user restart xiaozhi
-systemctl --user status xiaozhi
-journalctl --user -u xiaozhi -f
+systemctl --user restart xdev
+systemctl --user status xdev
+journalctl --user -u xdev -f
 ```
 
 ## Architecture
@@ -87,4 +87,4 @@ Key module map:
 
 ### Worker Pattern
 - The `workers/` directory stores timestamped self-optimization sessions. Each session has a `task.md` and `CLAUDE.md`. `CLAUDE.md` at the repo root is a symlink to the active worker session.
-- `xiaozhi/workspace/` is the working directory used by agents during autonomous task execution.
+- `xdev/workspace/` is the working directory used by agents during autonomous task execution.

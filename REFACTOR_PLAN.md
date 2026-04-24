@@ -1,4 +1,4 @@
-# 小智系统改造计划（精简版）
+# 艾克斯系统改造计划（精简版）
 
 > 基于对 Claude Code 源码（originClaw）、Python 重写（clawd-code）及互联网逆向分析的综合评估
 
@@ -121,7 +121,7 @@ class ModelSelector {
 
   constructor() {
     // 从配置读取默认模型
-    this.defaultModel = process.env.XIAOZHI_MODEL || 'glm-5'  // 默认使用 GLM-5
+    this.defaultModel = process.env.XDEV_MODEL || 'glm-5'  // 默认使用 GLM-5
   }
 
   getModel(id?: string): ModelConfig {
@@ -166,11 +166,11 @@ for await (const event of stream) {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/core/llm-client.ts` - 新增，统一 LLM 客户端
-- `xiaozhi/src/core/model-config.ts` - 新增，模型配置
-- `xiaozhi/src/core/model-selector.ts` - 新增，模型选择器
-- `xiaozhi/src/core/message-history.ts` - 新增，消息历史管理
-- `xiaozhi/src/core/claude-native-agent.ts` - 删除
+- `xdev/src/core/llm-client.ts` - 新增，统一 LLM 客户端
+- `xdev/src/core/model-config.ts` - 新增，模型配置
+- `xdev/src/core/model-selector.ts` - 新增，模型选择器
+- `xdev/src/core/message-history.ts` - 新增，消息历史管理
+- `xdev/src/core/claude-native-agent.ts` - 删除
 
 **收益**：
 - 启动延迟：500-2000ms → 50-100ms
@@ -183,7 +183,7 @@ for await (const event of stream) {
 
 #### 3.1.1 动态模型能力管理
 
-**借鉴 originClaw 的模型管理系统**，让小智可以自主选择和切换模型。
+**借鉴 originClaw 的模型管理系统**，让艾克斯可以自主选择和切换模型。
 
 **设计目标**：
 - 动态获取模型能力（上下文窗口、输出限制等）
@@ -570,12 +570,12 @@ function parseThinkingOutput(content: string): {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/core/model-capabilities.ts` - 新增，模型能力管理
-- `xiaozhi/src/core/model-selector.ts` - 增强，智能模型选择
-- `xiaozhi/src/core/glm-extensions.ts` - 新增，GLM-5 特殊能力支持
+- `xdev/src/core/model-capabilities.ts` - 新增，模型能力管理
+- `xdev/src/core/model-selector.ts` - 增强，智能模型选择
+- `xdev/src/core/glm-extensions.ts` - 新增，GLM-5 特殊能力支持
 
 **收益**：
-- 小智可根据任务复杂度自动选择合适模型
+- 艾克斯可根据任务复杂度自动选择合适模型
 - 支持模型别名（如 `turbo` → `glm-5-turbo`）
 - 支持 GLM-5 thinking mode 用于复杂任务
 - 降低成本（简单任务用低成本模型）
@@ -584,7 +584,7 @@ function parseThinkingOutput(content: string): {
 
 #### 3.2 记忆系统
 
-**设计原则**：用户只管说话，小智负责记住。让用户无感知，自动完成短期、长期记忆的提取和归类。
+**设计原则**：用户只管说话，艾克斯负责记住。让用户无感知，自动完成短期、长期记忆的提取和归类。
 
 **当前问题**：
 - 每次会话从零开始
@@ -605,20 +605,20 @@ function parseThinkingOutput(content: string): {
 
 | 作用域 | 说明 | 存储位置 |
 |--------|------|----------|
-| **私有** | 仅当前用户 | `~/.xiaozhi/memory/` |
-| **项目** | 特定项目上下文 | `~/.xiaozhi/memory/projects/<project>/` |
-| **团队** | 多 Agent 协作时共享 | `~/.xiaozhi/teams/<team-id>/memory/` |
+| **私有** | 仅当前用户 | `~/.xdev/memory/` |
+| **项目** | 特定项目上下文 | `~/.xdev/memory/projects/<project>/` |
+| **团队** | 多 Agent 协作时共享 | `~/.xdev/teams/<team-id>/memory/` |
 
 ##### 3.2.3 目录结构
 
 ```
-~/.xiaozhi/memory/
+~/.xdev/memory/
 ├── MEMORY.md                    # 主索引（200行/25KB限制）
 ├── semantic/                    # 语义记忆
 │   ├── preferences.md           # 用户偏好
 │   ├── facts.md                 # 事实信息
 │   └── conventions/             # 项目约定
-│       └── xiaozhi.md
+│       └── xdev.md
 ├── episodic/                    # 情景记忆
 │   ├── 2026-04-01-login-fix.md  # 按事件存储
 │   └── 2026-04-02-performance.md
@@ -718,10 +718,10 @@ async function retrieveRelevantMemories(
 
 ##### 3.2.6 多 Agent 团队记忆
 
-当小智使用 Agent tool 创建多个 subagent 协作时，需要团队记忆机制：
+当艾克斯使用 Agent tool 创建多个 subagent 协作时，需要团队记忆机制：
 
 ```
-~/.xiaozhi/teams/<team-id>/
+~/.xdev/teams/<team-id>/
 ├── config.json              # 团队配置
 ├── state.json               # 团队状态
 ├── memory/                  # 团队共享记忆
@@ -788,7 +788,7 @@ class TeamMemoryManager {
 # 会话摘要 - 2026-04-02
 
 ## 主题
-优化小智记忆系统
+优化艾克斯记忆系统
 
 ## 关键决策
 - 采用三分法记忆类型（语义/情景/程序）
@@ -968,9 +968,9 @@ For risky actions, check first:
 ```
 
 **涉及文件**：
-- `xiaozhi/src/prompt/builder.ts` - 新增
-- `xiaozhi/src/prompt/sections/*.ts` - 新增
-- `xiaozhi/src/prompt/context.ts` - 新增
+- `xdev/src/prompt/builder.ts` - 新增
+- `xdev/src/prompt/sections/*.ts` - 新增
+- `xdev/src/prompt/context.ts` - 新增
 
 ---
 
@@ -1029,9 +1029,9 @@ await team.sendMessage('researcher', '分析 src/core 模块')
 ```
 
 **涉及文件**：
-- `xiaozhi/src/agent/team-manager.ts` - 新增
-- `xiaozhi/src/agent/message-bus.ts` - 新增
-- `xiaozhi/src/agent/in-process-agent.ts` - 新增
+- `xdev/src/agent/team-manager.ts` - 新增
+- `xdev/src/agent/message-bus.ts` - 新增
+- `xdev/src/agent/in-process-agent.ts` - 新增
 
 **收益**：
 - 通信延迟：100-500ms → <1ms
@@ -1084,14 +1084,14 @@ const FileReadTool: Tool = {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/tools/tool-interface.ts` - 新增
-- `xiaozhi/src/tools/tool-registry.ts` - 新增
-- `xiaozhi/src/tools/read-tool.ts` - 新增
-- `xiaozhi/src/tools/edit-tool.ts` - 新增
-- `xiaozhi/src/tools/write-tool.ts` - 新增
-- `xiaozhi/src/tools/bash-tool.ts` - 新增
-- `xiaozhi/src/tools/glob-tool.ts` - 新增
-- `xiaozhi/src/tools/grep-tool.ts` - 新增
+- `xdev/src/tools/tool-interface.ts` - 新增
+- `xdev/src/tools/tool-registry.ts` - 新增
+- `xdev/src/tools/read-tool.ts` - 新增
+- `xdev/src/tools/edit-tool.ts` - 新增
+- `xdev/src/tools/write-tool.ts` - 新增
+- `xdev/src/tools/bash-tool.ts` - 新增
+- `xdev/src/tools/glob-tool.ts` - 新增
+- `xdev/src/tools/grep-tool.ts` - 新增
 
 ---
 
@@ -1247,8 +1247,8 @@ async function exitWorktree(session: WorktreeSession, action: 'keep' | 'remove')
 ```
 
 **涉及文件**：
-- `xiaozhi/src/tools/enter-worktree-tool.ts` - 新增
-- `xiaozhi/src/tools/exit-worktree-tool.ts` - 新增
+- `xdev/src/tools/enter-worktree-tool.ts` - 新增
+- `xdev/src/tools/exit-worktree-tool.ts` - 新增
 
 ---
 
@@ -1305,8 +1305,8 @@ async function handleAPIError(error: APIError): Promise<void> {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/core/error-handler.ts` - 新增
-- `xiaozhi/src/core/retry.ts` - 新增
+- `xdev/src/core/error-handler.ts` - 新增
+- `xdev/src/core/retry.ts` - 新增
 
 **收益**：
 - 减少用户干预
@@ -1332,14 +1332,14 @@ identifiers should remain in their original form.`
 }
 
 // 配置
-interface XiaozhiConfig {
+interface XdevConfig {
   language: '中文' | 'English' | '日本語'  // 默认中文
 }
 ```
 
 **涉及文件**：
-- `xiaozhi/src/config.ts` - 添加 language 配置
-- `xiaozhi/src/prompt/sections/language.ts` - 新增
+- `xdev/src/config.ts` - 添加 language 配置
+- `xdev/src/prompt/sections/language.ts` - 新增
 
 **收益**：
 - 强制中文输出
@@ -1371,14 +1371,14 @@ interface PersistedSession {
 // 自动保存（每轮对话后）
 async function saveSession(session: PersistedSession): Promise<void> {
   await fs.writeFile(
-    `~/.xiaozhi/sessions/${session.sessionId}.json`,
+    `~/.xdev/sessions/${session.sessionId}.json`,
     JSON.stringify(session)
   )
 }
 
 // 恢复会话
 async function restoreSession(sessionId: string): Promise<PersistedSession | null> {
-  const file = `~/.xiaozhi/sessions/${sessionId}.json`
+  const file = `~/.xdev/sessions/${sessionId}.json`
   if (await fs.exists(file)) {
     return JSON.parse(await fs.readFile(file, 'utf-8'))
   }
@@ -1399,8 +1399,8 @@ async function checkUnfinishedSession(): Promise<void> {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/session/persistence.ts` - 新增
-- `xiaozhi/src/session/restore.ts` - 新增
+- `xdev/src/session/persistence.ts` - 新增
+- `xdev/src/session/restore.ts` - 新增
 
 **收益**：
 - 断线恢复
@@ -1453,8 +1453,8 @@ interface SessionCost {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/telemetry/cost-tracker.ts` - 增强
-- `xiaozhi/src/telemetry/model-costs.ts` - 新增
+- `xdev/src/telemetry/cost-tracker.ts` - 增强
+- `xdev/src/telemetry/model-costs.ts` - 新增
 
 **收益**：
 - 精确成本统计
@@ -1493,7 +1493,7 @@ const OUTPUT_STYLE_PROMPTS = {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/prompt/sections/output-style.ts` - 新增
+- `xdev/src/prompt/sections/output-style.ts` - 新增
 
 ---
 
@@ -1518,7 +1518,7 @@ async function generateSessionName(messages: Message[]): Promise<string> {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/session/naming.ts` - 新增
+- `xdev/src/session/naming.ts` - 新增
 
 ---
 
@@ -1558,8 +1558,8 @@ async function processImage(filePath: string): Promise<ImageAttachment> {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/attachments/image-processor.ts` - 新增
-- `xiaozhi/src/attachments/pdf-processor.ts` - 新增
+- `xdev/src/attachments/image-processor.ts` - 新增
+- `xdev/src/attachments/pdf-processor.ts` - 新增
 
 ---
 
@@ -1576,8 +1576,8 @@ async function processImage(filePath: string): Promise<ImageAttachment> {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/permissions/permission-checker.ts` - 重构
-- `xiaozhi/src/permissions/sandbox.ts` - 新增
+- `xdev/src/permissions/permission-checker.ts` - 重构
+- `xdev/src/permissions/sandbox.ts` - 新增
 
 ---
 
@@ -1586,7 +1586,7 @@ async function processImage(filePath: string): Promise<ImageAttachment> {
 **改造方案**：
 ```typescript
 // OpenTelemetry 集成
-const tracer = opentelemetry.trace.getTracer('xiaozhi')
+const tracer = opentelemetry.trace.getTracer('xdev')
 
 span = tracer.startSpan('tool_execution', {
   attributes: { tool_name: 'BashTool', duration_ms: 150 }
@@ -1594,8 +1594,8 @@ span = tracer.startSpan('tool_execution', {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/telemetry/tracer.ts` - 新增
-- `xiaozhi/src/telemetry/cost-tracker.ts` - 新增
+- `xdev/src/telemetry/tracer.ts` - 新增
+- `xdev/src/telemetry/cost-tracker.ts` - 新增
 
 ---
 
@@ -1631,7 +1631,7 @@ span = tracer.startSpan('tool_execution', {
 
 **关于会话管理的决策**：
 
-由于用户通过飞书与小智对话（单一通道），且记忆系统自动跨会话积累知识，传统的会话管理变得不必要：
+由于用户通过飞书与艾克斯对话（单一通道），且记忆系统自动跨会话积累知识，传统的会话管理变得不必要：
 
 - ❌ 不需要多会话切换（飞书只有一个对话）
 - ❌ 不需要会话恢复（长期记忆系统自动保留重要信息）
@@ -1681,7 +1681,7 @@ span = tracer.startSpan('tool_execution', {
 ### 改造后目录结构
 
 ```
-xiaozhi/src/
+xdev/src/
 ├── core/
 │   ├── sdk-agent.ts           # SDK 直连核心
 │   ├── message-history.ts     # 消息历史管理
@@ -1753,7 +1753,7 @@ xiaozhi/src/
 ### 删除的文件/目录
 
 ```
-xiaozhi/src/
+xdev/src/
 ├── core/claude-native-agent.ts    # 删除（CLI spawn）
 ├── expert/                         # 删除整个目录（专家系统）
 ├── worker/                         # 删除整个目录（Worker 管理）
@@ -1839,17 +1839,17 @@ xiaozhi/src/
 ### 10.1 废弃 ~/.claude/ 目录
 
 **当前问题**：
-- 小智依赖 Claude CLI 的配置目录 `~/.claude/`
+- 艾克斯依赖 Claude CLI 的配置目录 `~/.claude/`
 - 该目录包含 Claude CLI 的会话、设置、记忆等
 - 移除 CLI 依赖后，这些配置将无效
 
 **改造方案**：
 
-小智使用独立的配置目录 `~/.xiaozhi/`，与 Claude CLI 完全解耦：
+艾克斯使用独立的配置目录 `~/.xdev/`，与 Claude CLI 完全解耦：
 
 ```
-~/.xiaozhi/
-├── config.json                  # 小智主配置文件
+~/.xdev/
+├── config.json                  # 艾克斯主配置文件
 │
 ├── sessions/                    # 会话持久化
 │   ├── current.json             # 当前会话
@@ -1880,7 +1880,7 @@ xiaozhi/src/
 │   └── temp/                    # 临时文件
 │
 └── logs/                        # 日志
-    ├── xiaozhi.log              # 主日志
+    ├── xdev.log              # 主日志
     └── error.log                # 错误日志
 ```
 
@@ -1910,28 +1910,28 @@ xiaozhi/src/
 // src/config.ts
 
 export const PATHS = {
-  // 小智配置目录
-  XIAOZHI_HOME: path.join(os.homedir(), '.xiaozhi'),
-  CONFIG_FILE: path.join(os.homedir(), '.xiaozhi', 'config.json'),
+  // 艾克斯配置目录
+  XDEV_HOME: path.join(os.homedir(), '.xdev'),
+  CONFIG_FILE: path.join(os.homedir(), '.xdev', 'config.json'),
 
   // 子目录
-  SESSIONS_DIR: path.join(os.homedir(), '.xiaozhi', 'sessions'),
-  MEMORY_DIR: path.join(os.homedir(), '.xiaozhi', 'memory'),
-  TEAMS_DIR: path.join(os.homedir(), '.xiaozhi', 'teams'),      // 多 Agent 团队
-  CACHE_DIR: path.join(os.homedir(), '.xiaozhi', 'cache'),
-  LOGS_DIR: path.join(os.homedir(), '.xiaozhi', 'logs'),
+  SESSIONS_DIR: path.join(os.homedir(), '.xdev', 'sessions'),
+  MEMORY_DIR: path.join(os.homedir(), '.xdev', 'memory'),
+  TEAMS_DIR: path.join(os.homedir(), '.xdev', 'teams'),      // 多 Agent 团队
+  CACHE_DIR: path.join(os.homedir(), '.xdev', 'cache'),
+  LOGS_DIR: path.join(os.homedir(), '.xdev', 'logs'),
 
   // 工作目录
-  WORKSPACE: path.join(os.homedir(), '.xiaozhi', 'workspace'),
+  WORKSPACE: path.join(os.homedir(), '.xdev', 'workspace'),
 
   // 缓存文件
-  MODEL_CAPABILITIES_CACHE: path.join(os.homedir(), '.xiaozhi', 'cache', 'model-capabilities.json'),
-  TOOLS_CACHE: path.join(os.homedir(), '.xiaozhi', 'cache', 'tools.json'),
-  PROMPTS_CACHE: path.join(os.homedir(), '.xiaozhi', 'cache', 'prompts'),
+  MODEL_CAPABILITIES_CACHE: path.join(os.homedir(), '.xdev', 'cache', 'model-capabilities.json'),
+  TOOLS_CACHE: path.join(os.homedir(), '.xdev', 'cache', 'tools.json'),
+  PROMPTS_CACHE: path.join(os.homedir(), '.xdev', 'cache', 'prompts'),
 }
 
 // 默认配置
-export const DEFAULT_CONFIG: XiaozhiConfig = {
+export const DEFAULT_CONFIG: XdevConfig = {
   // 模型配置
   model: {
     default: 'glm-5',
@@ -1991,12 +1991,12 @@ export const DEFAULT_CONFIG: XiaozhiConfig = {
 // scripts/migrate-config.ts
 
 /**
- * 从 ~/.claude/ 迁移配置到 ~/.xiaozhi/
+ * 从 ~/.claude/ 迁移配置到 ~/.xdev/
  * 注意：只迁移记忆文件，不迁移会话（格式不兼容）
  */
 async function migrateFromClaudeCLI(): Promise<void> {
   const oldDir = path.join(os.homedir(), '.claude')
-  const newDir = PATHS.XIAOZHI_HOME
+  const newDir = PATHS.XDEV_HOME
 
   // 检查是否需要迁移
   if (!fs.existsSync(oldDir)) {
@@ -2038,7 +2038,7 @@ async function migrateFromClaudeCLI(): Promise<void> {
   // 初始化 CLAUDE.md（工作目录的系统提示词）
   const claudeMd = path.join(PATHS.WORKSPACE, 'CLAUDE.md')
   if (!fs.existsSync(claudeMd)) {
-    await fs.writeFile(claudeMd, `# 小智工作目录\n\n此文件由系统动态生成。\n`)
+    await fs.writeFile(claudeMd, `# 艾克斯工作目录\n\n此文件由系统动态生成。\n`)
     console.log('✅ 已初始化工作目录')
   }
 
@@ -2047,13 +2047,13 @@ async function migrateFromClaudeCLI(): Promise<void> {
 }
 
 /**
- * 初始化小智目录结构
+ * 初始化艾克斯目录结构
  */
-async function initXiaozhiHome(): Promise<void> {
-  const xiaozhiHome = PATHS.XIAOZHI_HOME
+async function initXdevHome(): Promise<void> {
+  const xdevHome = PATHS.XDEV_HOME
 
-  if (fs.existsSync(xiaozhiHome)) {
-    console.log('~/.xiaozhi/ 目录已存在')
+  if (fs.existsSync(xdevHome)) {
+    console.log('~/.xdev/ 目录已存在')
     return
   }
 
@@ -2063,13 +2063,13 @@ async function initXiaozhiHome(): Promise<void> {
 ```
 
 **涉及文件**：
-- `xiaozhi/src/config.ts` - 重构，使用新路径
-- `xiaozhi/scripts/migrate-config.ts` - 新增，迁移脚本
+- `xdev/src/config.ts` - 重构，使用新路径
+- `xdev/scripts/migrate-config.ts` - 新增，迁移脚本
 
 **收益**：
 - 完全独立于 Claude CLI
 - 配置结构更清晰
-- 可以与小智独立演进
+- 可以与艾克斯独立演进
 - 支持从旧配置平滑迁移
 
 ---
@@ -2084,4 +2084,4 @@ async function initXiaozhiHome(): Promise<void> {
 | `~/.claude/` 配置 | 使用独立配置目录 |
 | Claude 会话文件 | 使用新的会话管理 |
 
-**注意**：`~/.claude/` 目录可以保留，用于独立安装的 Claude CLI。小智将不再依赖它。
+**注意**：`~/.claude/` 目录可以保留，用于独立安装的 Claude CLI。艾克斯将不再依赖它。

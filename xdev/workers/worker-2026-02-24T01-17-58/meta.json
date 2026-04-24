@@ -1,0 +1,29 @@
+{
+  "id": "w_mlzx226n_e11f67",
+  "name": "worker-2026-02-24T01-17-58",
+  "sessionId": "default",
+  "status": "completed",
+  "tmuxSession": "worker_mlzx226n",
+  "claudeSessionId": "w_mlzx226n_e11f67",
+  "task": {
+    "description": "艾克斯持续优化",
+    "workDir": "/home/wxy/data/claudeClaw",
+    "model": "glm-5",
+    "timeout": 0
+  },
+  "progress": {
+    "percentage": 0,
+    "currentStep": "初始化",
+    "toolCalls": 0,
+    "filesModified": 0,
+    "lastUpdate": "2026-02-24T01:17:59.001Z"
+  },
+  "hooks": {
+    "progressFile": "/home/wxy/data/claudeClaw/xdev/workers/worker-2026-02-24T01-17-58/progress.json",
+    "notifyScript": "/home/wxy/data/claudeClaw/xdev/scripts/notify_xdev.sh",
+    "completedScript": "/home/wxy/data/claudeClaw/xdev/scripts/worker_completed.sh"
+  },
+  "createdAt": "2026-02-24T01:17:59.001Z",
+  "startedAt": "2026-02-24T01:17:59.001Z",
+  "completedAt": "2026-02-24T01:20:06.685Z"
+}

@@ -3,7 +3,7 @@
 > 分析时间：2026-04  
 > 参考项目：originClaw (Claude Code 源码)、clawd-code (Python 移植)、learn-claude-code (教程)  
 > 参考文献：Anthropic《Building Effective Agents》  
-> 目标：识别小智可借鉴的 harness engineering 提升方向
+> 目标：识别艾克斯可借鉴的 harness engineering 提升方向
 
 ---
 
@@ -39,7 +39,7 @@ Harness = Tools + Knowledge + Observation + Action Interfaces + Permissions
 ## 一、Agent Loop：基础正确，可加生命周期钩子
 
 ### 当前状态
-小智使用 `LLMClient.chat()` 返回 `AsyncGenerator<ChatEvent>`，在 InProcessAgent 中消费工具调用，循环直到无工具调用为止。**核心模式正确**。
+艾克斯使用 `LLMClient.chat()` 返回 `AsyncGenerator<ChatEvent>`，在 InProcessAgent 中消费工具调用，循环直到无工具调用为止。**核心模式正确**。
 
 ### 可借鉴：Loop 生命周期钩子
 
@@ -116,7 +116,7 @@ Layer 2（Tool Result，按需加载完整 body）：
 └─────────────────────────────────────────────────────────┘
 ```
 
-**小智改进方案**：
+**艾克斯改进方案**：
 1. **Layer 1（立即可做）**：在每次 loop 迭代后，把 ≥4 轮前的 `tool_result` content 替换为 `[omitted: {tool_name}]`
 2. **Layer 2（重要）**：设置 token 阈值（建议 80K），触发时保存 transcript 到 SQLite，然后用 LLM 生成摘要重置 context
 3. **关键**：压缩后必须**重新注入 identity block**（见第六节）
@@ -126,7 +126,7 @@ Layer 2（Tool Result，按需加载完整 body）：
 ## 四、Todo/任务追踪：添加提醒注入机制【中优先级】
 
 ### 当前状态
-小智有 `todo-manager.ts` 和 `task-system.ts`，基本功能完善。
+艾克斯有 `todo-manager.ts` 和 `task-system.ts`，基本功能完善。
 
 ### 参考：Reminder 注入（来自 learn-claude-code s03 / originClaw TodoWriteTool）
 
@@ -156,7 +156,7 @@ if todo_manager.rounds_since_update >= 3:
 ## 五、Subagent 上下文隔离：明确 fresh context 模式【中优先级】
 
 ### 当前状态
-小智 `InProcessAgent` 支持嵌套，但不确定子 agent 是否总是使用干净的 `messages=[]`。
+艾克斯 `InProcessAgent` 支持嵌套，但不确定子 agent 是否总是使用干净的 `messages=[]`。
 
 ### 参考：严格上下文隔离（来自 learn-claude-code s04）
 
@@ -186,7 +186,7 @@ messages=[...全量历史...]       messages=[]  ← 必须是空的
 ## 六、Identity 重注入：压缩后不丢失身份【中优先级】
 
 ### 当前状态
-小智自主 agent 有 `name` / `role` / `skills` 配置，但压缩后如何保持身份不明确。
+艾克斯自主 agent 有 `name` / `role` / `skills` 配置，但压缩后如何保持身份不明确。
 
 ### 参考：压缩后 Identity 重注入（来自 learn-claude-code s11）
 
@@ -216,7 +216,7 @@ def _compact_if_needed(self, messages: list, identity: dict) -> list:
 ## 七、多 Agent 协作：文件式邮箱协议【低优先级（已有基础）】
 
 ### 当前状态
-小智使用 `plugin-sdk/event-bus.ts` 做模块间通信，是内存 pub/sub 模型。
+艾克斯使用 `plugin-sdk/event-bus.ts` 做模块间通信，是内存 pub/sub 模型。
 
 ### 参考：JSONL 邮箱协议（来自 learn-claude-code s09/s10）
 
@@ -238,7 +238,7 @@ def _compact_if_needed(self, messages: list, identity: dict) -> list:
 - EventBus：内存 pub/sub，重启后丢失，无法跨进程
 - JSONL 邮箱：持久化，可审计，可回放，支持异步
 
-**建议**：如果小智要做多 session 多 agent 协作，或需要 agent 在重启后恢复通信状态，可以在 task-system 旁边增加一个基于 SQLite 的 inbox 机制，替代或补充现有 EventBus。
+**建议**：如果艾克斯要做多 session 多 agent 协作，或需要 agent 在重启后恢复通信状态，可以在 task-system 旁边增加一个基于 SQLite 的 inbox 机制，替代或补充现有 EventBus。
 
 ---
 
@@ -273,7 +273,7 @@ const checks = [
 ]
 ```
 
-**小智可立即采用的改进**：
+**艾克斯可立即采用的改进**：
 
 ```typescript
 // 在 background-tasks.ts 或工具执行层添加：
@@ -329,7 +329,7 @@ function validateCommand(cmd: string): { safe: boolean; reason?: string } {
    - 避免需要精确计数（如 diff 行号）的格式
 ```
 
-### 小智工具描述审查建议
+### 艾克斯工具描述审查建议
 
 查看 `src/tools/index.ts` 中的工具描述，对照以下标准：
 - [ ] 是否说明了"不要用于 X 场景"（负面说明）？
@@ -358,7 +358,7 @@ function validateCommand(cmd: string): { safe: boolean; reason?: string } {
       循环直到 Evaluator 认为"合格"
 ```
 
-**适合小智的场景**：
+**适合艾克斯的场景**：
 - 飞书消息生成：Generator 生成回复，Evaluator 检查"是否简洁/是否回答了问题"
 - 代码审查：Generator 找问题，Evaluator 验证"问题是否真实存在"
 - 任务规划：Generator 制定计划，Evaluator 检查"依赖是否合理/步骤是否可执行"
@@ -379,7 +379,7 @@ class QueryEngineConfig:
     structured_retry_limit: int = 2   # 结构化失败重试次数
 ```
 
-**建议**：小智的 `InProcessAgent` 目前可能缺少 `max_turns` 硬上限保护。建议添加：
+**建议**：艾克斯的 `InProcessAgent` 目前可能缺少 `max_turns` 硬上限保护。建议添加：
 
 ```typescript
 interface AgentLoopConfig {
@@ -417,7 +417,7 @@ interface AgentLoopConfig {
 
 **原理**：每个并发任务运行在独立的 git worktree 中，避免文件冲突，同时通过 task ID 保持协调。
 
-**适合小智的场景**：如果要让多个 AutonomousAgent 并发处理同一代码库的不同任务，worktree 隔离是必须的。
+**适合艾克斯的场景**：如果要让多个 AutonomousAgent 并发处理同一代码库的不同任务，worktree 隔离是必须的。
 
 ---
 

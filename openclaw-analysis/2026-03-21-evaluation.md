@@ -206,18 +206,18 @@ interface ChannelPlugin {
 
 **实现建议**:
 ```typescript
-// 定义小智的插件接口
-interface XiaozhiPlugin {
+// 定义艾克斯的插件接口
+interface XdevPlugin {
   id: string;
   type: 'channel' | 'skill' | 'provider';
-  setup(context: XiaozhiContext): Promise<void>;
-  handle?(event: XiaozhiEvent): Promise<XiaozhiResponse>;
+  setup(context: XdevContext): Promise<void>;
+  handle?(event: XdevEvent): Promise<XdevResponse>;
 }
 ```
 
 #### 2. Gateway 控制平面 ⭐⭐⭐⭐
 
-**现状**: 小智直接通过飞书 webhook 接收消息
+**现状**: 艾克斯直接通过飞书 webhook 接收消息
 **借鉴方向**:
 - 引入 WebSocket 控制平面
 - 支持多客户端连接（CLI、Web、Mobile）
@@ -230,7 +230,7 @@ interface XiaozhiPlugin {
 
 #### 3. 会话管理机制 ⭐⭐⭐⭐
 
-**现状**: 小智使用简单的对话历史
+**现状**: 艾克斯使用简单的对话历史
 **借鉴方向**:
 - 会话生命周期管理
 - 会话修剪策略
@@ -271,9 +271,9 @@ interface XiaozhiPlugin {
 
 ### 3.3 低价值或不适用的点
 
-- **多通道支持**: 小智专注飞书，不需要 20+ 通道
-- **原生应用**: 小智不需要 macOS/iOS/Android 应用
-- **Docker 部署**: 小智是个人工具，直接运行更简单
+- **多通道支持**: 艾克斯专注飞书，不需要 20+ 通道
+- **原生应用**: 艾克斯不需要 macOS/iOS/Android 应用
+- **Docker 部署**: 艾克斯是个人工具，直接运行更简单
 - **Nix 模式**: 过于复杂
 
 ---
@@ -294,7 +294,7 @@ interface XiaozhiPlugin {
 ### 4.2 中期改进（1-2 月）
 
 3. **插件系统**
-   - 设计 `XiaozhiPlugin` 接口
+   - 设计 `XdevPlugin` 接口
    - 重构现有功能为插件
    - 飞书通道独立化
 
@@ -356,7 +356,7 @@ interface XiaozhiPlugin {
 
 ## 七、结论
 
-OpenClaw 是一个成熟的 AI 助手框架，其插件化架构、Gateway 设计和会话管理机制对小智项目有很高的借鉴价值。
+OpenClaw 是一个成熟的 AI 助手框架，其插件化架构、Gateway 设计和会话管理机制对艾克斯项目有很高的借鉴价值。
 
 **优先级建议**:
 1. ⭐⭐⭐⭐⭐ 插件化架构 - 解耦核心与扩展

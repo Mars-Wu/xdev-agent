@@ -1,4 +1,4 @@
-# Pi-Mono 与小智项目架构分析报告
+# Pi-Mono 与艾克斯项目架构分析报告
 
 > 生成时间: 2025-02-25
 > 分析者: 研究专家 (researcher)
@@ -8,9 +8,9 @@
 ## 目录
 
 1. [Pi-Mono 项目架构](#1-pi-mono-项目架构)
-2. [小智项目架构](#2-小智项目架构)
+2. [艾克斯项目架构](#2-艾克斯项目架构)
 3. [架构对比分析](#3-架构对比分析)
-4. [小智项目优化建议](#4-小智项目优化建议)
+4. [艾克斯项目优化建议](#4-艾克斯项目优化建议)
 5. [总结](#5-总结)
 
 ---
@@ -231,11 +231,11 @@ class TUI {
 
 ---
 
-## 2. 小智项目架构
+## 2. 艾克斯项目架构
 
 ### 2.1 项目概述
 
-小智 (Xiaozhi) 是基于 Claude CLI 的智能管家系统，通过飞书提供对话接口，拥有 AI 专家团队处理特定类型任务。
+艾克斯 (Xdev) 是基于 Claude CLI 的智能管家系统，通过飞书提供对话接口，拥有 AI 专家团队处理特定类型任务。
 
 **技术栈**:
 - 语言: TypeScript
@@ -247,7 +247,7 @@ class TUI {
 ### 2.2 目录结构
 
 ```
-xiaozhi/
+xdev/
 ├── src/
 │   ├── index.ts                     # 主入口
 │   ├── config.ts                    # 配置管理
@@ -459,12 +459,12 @@ interface ExpertConfig {
 
 #### 专家调用流程
 ```
-小智 → POST /expert/call
+艾克斯 → POST /expert/call
      → ExpertManager
      → spawn claude --print
      → 专家执行
      → POST /expert/complete
-     → 小智收到结果
+     → 艾克斯收到结果
 ```
 
 ---
@@ -473,7 +473,7 @@ interface ExpertConfig {
 
 ### 3.1 项目定位对比
 
-| 维度 | Pi-Mono | 小智 |
+| 维度 | Pi-Mono | 艾克斯 |
 |------|---------|------|
 | **定位** | AI Agent 开发框架 | 智能管家应用 |
 | **目标用户** | 开发者 | 终端用户 |
@@ -483,7 +483,7 @@ interface ExpertConfig {
 
 ### 3.2 技术架构对比
 
-| 维度 | Pi-Mono | 小智 |
+| 维度 | Pi-Mono | 艾克斯 |
 |------|---------|------|
 | **LLM 集成** | 自研多提供商封装 | 依赖 Claude CLI |
 | **扩展性** | 插件扩展系统 | 专家系统 |
@@ -494,7 +494,7 @@ interface ExpertConfig {
 
 ### 3.3 代码组织对比
 
-| 维度 | Pi-Mono | 小智 |
+| 维度 | Pi-Mono | 艾克斯 |
 |------|---------|------|
 | **包数量** | 7 个独立包 | 1 个单体应用 |
 | **总代码量** | ~50,000 行 | ~3,000 行 |
@@ -503,7 +503,7 @@ interface ExpertConfig {
 
 ### 3.4 功能覆盖对比
 
-| 功能 | Pi-Mono | 小智 |
+| 功能 | Pi-Mono | 艾克斯 |
 |------|---------|------|
 | 多 LLM 提供商 | ✅ 10+ 提供商 | ❌ 仅 Claude |
 | 工具系统 | ✅ 内置 20+ 工具 | ⚠️ 依赖 Claude CLI |
@@ -530,7 +530,7 @@ interface ExpertConfig {
 - 构建和依赖管理复杂
 - 对于简单场景过于重量级
 
-#### 小智
+#### 艾克斯
 
 **优点**:
 - 架构简单，易于理解和维护
@@ -546,15 +546,15 @@ interface ExpertConfig {
 
 ---
 
-## 4. 小智项目优化建议
+## 4. 艾克斯项目优化建议
 
 ### 4.1 架构层面优化
 
 #### 4.1.1 引入分层架构
 
-**现状**: 小智采用单体架构，所有模块耦合在一起。
+**现状**: 艾克斯采用单体架构，所有模块耦合在一起。
 
-**建议**: 参考 Pi-Mono 的分层架构，将小智拆分为清晰的层次：
+**建议**: 参考 Pi-Mono 的分层架构，将艾克斯拆分为清晰的层次：
 
 ```
 src/
@@ -584,7 +584,7 @@ src/
 
 #### 4.1.2 抽象 LLM 接口
 
-**现状**: 小智直接调用 Claude CLI，与单一提供商强绑定。
+**现状**: 艾克斯直接调用 Claude CLI，与单一提供商强绑定。
 
 **建议**: 定义统一的 LLM 接口，支持多提供商：
 
@@ -639,7 +639,7 @@ class AnthropicProvider implements LLMProvider {
 
 #### 4.1.3 适配器模式
 
-**现状**: 飞书客户端与小智核心逻辑耦合。
+**现状**: 飞书客户端与艾克斯核心逻辑耦合。
 
 **建议**: 定义消息平台适配器接口：
 
@@ -735,7 +735,7 @@ class SmartCompaction implements CompactionStrategy {
 
 #### 4.2.3 工具系统
 
-**现状**: 小智依赖 Claude CLI 的内置工具。
+**现状**: 艾克斯依赖 Claude CLI 的内置工具。
 
 **建议**: 引入独立的工具系统：
 
@@ -768,12 +768,12 @@ const builtInTools: Tool[] = [
 
 #### 4.3.1 测试覆盖
 
-**现状**: 小智缺少测试代码。
+**现状**: 艾克斯缺少测试代码。
 
 **建议**: 添加测试覆盖：
 
 ```
-xiaozhi/
+xdev/
 ├── src/
 ├── tests/
 │   ├── unit/
@@ -833,7 +833,7 @@ describe('SessionManager', () => {
 
 ```typescript
 // src/config/index.ts
-interface XiaozhiConfig {
+interface XdevConfig {
   server: {
     port: number
     host: string
@@ -853,7 +853,7 @@ interface XiaozhiConfig {
   }
 }
 
-function loadConfig(): XiaozhiConfig {
+function loadConfig(): XdevConfig {
   return {
     server: {
       port: parseInt(process.env.PORT || '8081'),
@@ -893,11 +893,11 @@ logger.info('Expert called', {
 
 ```typescript
 const metrics = {
-  messagesReceived: new Counter('xiaozhi_messages_received_total'),
-  messagesProcessed: new Counter('xiaozhi_messages_processed_total'),
-  expertCalls: new Counter('xiaozhi_expert_calls_total', ['expert']),
-  processingTime: new Histogram('xiaozhi_processing_time_seconds'),
-  activeSessions: new Gauge('xiaozhi_active_sessions'),
+  messagesReceived: new Counter('xdev_messages_received_total'),
+  messagesProcessed: new Counter('xdev_messages_processed_total'),
+  expertCalls: new Counter('xdev_expert_calls_total', ['expert']),
+  processingTime: new Histogram('xdev_processing_time_seconds'),
+  activeSessions: new Gauge('xdev_active_sessions'),
 }
 ```
 
@@ -928,9 +928,9 @@ Pi-Mono 是一个设计精良的 AI Agent 开发框架，具有以下特点：
 4. **扩展性强**: 插件系统支持自定义功能
 5. **工程化完善**: 测试、CI/CD、文档齐全
 
-### 5.2 小智架构总结
+### 5.2 艾克斯架构总结
 
-小智是一个专注飞书场景的智能管家应用，具有以下特点：
+艾克斯是一个专注飞书场景的智能管家应用，具有以下特点：
 
 1. **架构简洁**: 单体应用，易于理解和维护
 2. **专家系统**: 巧妙的任务分发机制
@@ -958,7 +958,7 @@ Pi-Mono 是一个设计精良的 AI Agent 开发框架，具有以下特点：
 
 - [Pi-Mono GitHub](https://github.com/badlogic/pi-mono)
 - [Pi-Mono 文档](packages/coding-agent/README.md)
-- [小智项目](/home/wxy/data/claudeClaw/xiaozhi)
+- [艾克斯项目](/home/wxy/data/claudeClaw/xdev)
 
 ---
 

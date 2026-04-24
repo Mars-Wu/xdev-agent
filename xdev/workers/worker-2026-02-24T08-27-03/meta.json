@@ -1,0 +1,27 @@
+{
+  "id": "w_mm0cdv8p_pyl26a",
+  "name": "worker-2026-02-24T08-27-03",
+  "sessionId": "default",
+  "status": "running",
+  "tmuxSession": "worker_mm0cdv8p",
+  "claudeSessionId": "w_mm0cdv8p_pyl26a",
+  "task": {
+    "description": "解决cicishop backend构建问题",
+    "workDir": "/home/wxy/data/cicishop",
+    "model": "glm-5"
+  },
+  "progress": {
+    "percentage": 0,
+    "currentStep": "初始化",
+    "toolCalls": 0,
+    "filesModified": 0,
+    "lastUpdate": "2026-02-24T08:27:03.998Z"
+  },
+  "hooks": {
+    "progressFile": "/home/wxy/data/claudeClaw/xdev/workers/worker-2026-02-24T08-27-03/progress.json",
+    "notifyScript": "/home/wxy/data/claudeClaw/xdev/scripts/notify_xdev.sh",
+    "completedScript": "/home/wxy/data/claudeClaw/xdev/scripts/worker_completed.sh"
+  },
+  "createdAt": "2026-02-24T08:27:03.998Z",
+  "startedAt": "2026-02-24T08:27:03.998Z"
+}

@@ -1,0 +1,70 @@
+{
+  "name": "xdev",
+  "version": "3.1.0",
+  "description": "AI管家艾克斯 - AI Butler powered by Claude",
+  "main": "dist/index.js",
+  "bin": {
+    "xdev": "dist/cli.js"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc && cp -r src/skills/builtins dist/skills/",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "watch": "tsc -w",
+    "test": "vitest run",
+    "test:integration": "vitest run src/integration/chat-session.integration.test.ts src/integration/topic-history.integration.test.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:live:feishu": "tsx tests/live-feishu/run-live-suite.ts",
+    "doctor": "node dist/cli.js doctor",
+    "smoke-check": "node dist/cli.js smoke-check",
+    "export-status": "node dist/cli.js export-status"
+  },
+  "keywords": [
+    "ai",
+    "claude",
+    "feishu",
+    "butler"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@larksuiteoapi/node-sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/glob": "^8.1.0",
+    "better-sqlite3": "^11.0.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.18.2",
+    "glob": "^13.0.6",
+    "mammoth": "^1.12.0",
+    "node-cron": "^4.2.1",
+    "pdf-parse": "^2.4.5",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
+    "xlsx": "^0.18.5",
+    "yaml": "^2.8.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.0",
+    "playwright": "^1.59.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

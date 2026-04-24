@@ -1,7 +1,7 @@
 # OpenClaw 项目分析
 
 本目录用于持续跟踪和分析 [OpenClaw](https://github.com/openclaw/openclaw) 项目，
-识别对 claudeClaw（小智）有帮助的技术方案和最佳实践。
+识别对 claudeClaw（艾克斯）有帮助的技术方案和最佳实践。
 
 ## 目录结构
 
@@ -29,7 +29,7 @@ OpenClaw 是一个开源的个人 AI 助手框架，支持多渠道消息接入�
 
 ## 与 claudeClaw 的关系
 
-| 维度 | OpenClaw | claudeClaw（小智） |
+| 维度 | OpenClaw | claudeClaw（艾克斯） |
 |------|----------|-------------------|
 | 定位 | 多渠道 AI 助手框架 | 飞书个人助手 |
 | 架构 | Gateway + Plugin SDK | 单体服务 + Worker |

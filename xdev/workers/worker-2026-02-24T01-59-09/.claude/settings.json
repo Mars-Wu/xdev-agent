@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "XDEV_HOST=localhost XDEV_PORT=8081 /home/wxy/data/claudeClaw/xdev/scripts/notify_xdev.sh w_mlzyj0yx_zbu1gj"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "XDEV_HOST=localhost XDEV_PORT=8081 /home/wxy/data/claudeClaw/xdev/scripts/worker_completed.sh w_mlzyj0yx_zbu1gj"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "XDEV_HOST=localhost XDEV_PORT=8081 /home/wxy/data/claudeClaw/xdev/scripts/subagent_notify.sh w_mlzyj0yx_zbu1gj"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$(date -Iseconds): tool_used\" >> /home/wxy/data/claudeClaw/xdev/workers/worker-2026-02-24T01-59-09/actions.log"
+          }
+        ]
+      }
+    ]
+  }
+}

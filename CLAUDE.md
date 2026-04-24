@@ -1,1 +1,1 @@
-/home/wxy/data/claudeClaw/xiaozhi/workers/worker-2026-02-24T03-06-06/CLAUDE.md
+/home/wxy/data/claudeClaw/xdev/workers/worker-2026-02-24T03-06-06/CLAUDE.md

@@ -11,14 +11,14 @@
 
 ### 1. 脚本发送的路径
 
-**notify_xiaozhi.sh** (第30行):
+**notify_xdev.sh** (第30行):
 ```bash
-curl -s -X POST "http://${XIAOZHI_HOST}:${XIAOZHI_PORT}/internal/worker/notify"
+curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/internal/worker/notify"
 ```
 
 **worker_completed.sh** (第36行):
 ```bash
-curl -s -X POST "http://${XIAOZHI_HOST}:${XIAOZHI_PORT}/internal/worker/complete"
+curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/internal/worker/complete"
 ```
 
 ### 2. hooks-receiver 监听的路径
@@ -58,16 +58,16 @@ Cannot POST /internal/worker/notify  # 404 错误
 
 修改两个脚本文件，将 API 路径改为与 hooks-receiver 一致：
 
-**notify_xiaozhi.sh**:
+**notify_xdev.sh**:
 ```diff
-- curl -s -X POST "http://${XIAOZHI_HOST}:${XIAOZHI_PORT}/internal/worker/notify"
-+ curl -s -X POST "http://${XIAOZHI_HOST}:${XIAOZHI_PORT}/hooks/notification"
+- curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/internal/worker/notify"
++ curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/hooks/notification"
 ```
 
 **worker_completed.sh**:
 ```diff
-- curl -s -X POST "http://${XIAOZHI_HOST}:${XIAOZHI_PORT}/internal/worker/complete"
-+ curl -s -X POST "http://${XIAOZHI_HOST}:${XIAOZHI_PORT}/hooks/stop"
+- curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/internal/worker/complete"
++ curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/hooks/stop"
 ```
 
 ### 方案 B: 在 hooks-receiver 添加别名路由

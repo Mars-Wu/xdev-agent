@@ -1,13 +1,38 @@
-# xdev
+# xdev-agent
 
-`xdev` is an open source Feishu-first AI operations assistant designed for long-running work. The runtime lives in [`xdev/`](xdev/), uses the Zhipu GLM API through an Anthropic-compatible interface, and is intended to run reliably on Linux with `systemd`.
+`xdev-agent` is an open source, Feishu-first AI agent runtime for engineering and operations work that needs to stay alive, keep context, and act on real tools instead of only producing chat replies.
 
-## What this repository is for
+The main application lives in [`xdev/`](xdev/). The repository is named **xdev-agent**, while the application and runtime inside it are still named **xdev**. It uses the Zhipu GLM API through an Anthropic-compatible interface and is designed to run reliably on Linux with `systemd`.
 
-- Running an AI assistant in Feishu for engineering, operations, and project support
-- Executing multi-step workflows with tasks, background jobs, and tool calls
-- Preserving context through memory, topic routing, and exportable runtime artifacts
-- Operating the service as a durable Linux service instead of a short-lived chat bot
+## What xdev-agent solves
+
+Most chat bots are good at answering a message once, but weak at operating as a durable service. `xdev-agent` is built for the gaps between a demo bot and a real internal assistant:
+
+- **Long-running operation** instead of short-lived chat sessions
+- **Feishu-native workflows** instead of generic web chat only
+- **Tool execution and task graphs** instead of plain text responses
+- **Context continuity** through memory, topic routing, and history aggregation
+- **Operational visibility** through exportable runtime artifacts and service diagnostics
+
+In practice, this means you can run an assistant in Feishu that can respond to people, work through multi-step tasks, keep track of related topics over time, and behave like a maintainable service on a Linux host.
+
+## Key characteristics
+
+| Area | What stands out |
+| --- | --- |
+| Feishu-first design | Built around Feishu messaging, events, and `lark-cli`-based integrations |
+| Durable runtime | Intended for `systemd` deployment with explicit service, logs, health checks, and runtime home |
+| Agent execution | Supports tools, workflows, background jobs, and DAG-style task execution |
+| Context handling | Includes memory extraction, topic routing, summaries, and history-aware prompt building |
+| Operational introspection | Exports codebase, task, topic, and memory artifacts for debugging and review |
+| Test coverage | Includes local tests, integration tests, and live Feishu validation flows |
+
+## Typical use cases
+
+- Run a Feishu bot that can do more than answer questions, such as invoking tools and handling multi-step workflows
+- Operate an internal engineering or ops assistant as a recoverable service instead of a transient script
+- Preserve and inspect long-running conversational context, topic grouping, and memory output
+- Build a practical Feishu automation layer on top of GLM models without re-creating service scaffolding from scratch
 
 ## Repository layout
 
@@ -63,3 +88,8 @@ CHAT_ID=<chat_id> npm run test:live:feishu -- --focus unfinished
 
 `xdev` uses `~/.xdev` as the default local runtime home.
 
+## License
+
+This repository is released under the **MIT License**. You may use, modify, distribute, and include it in commercial projects as long as the copyright notice and license text are preserved.
+
+See [`LICENSE`](LICENSE) for the full terms. The software is provided **"as is"**, without warranty of any kind.

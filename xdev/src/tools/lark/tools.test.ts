@@ -143,7 +143,7 @@ describe('lark tools', () => {
             total: 1,
             results: [
               {
-                title_highlighted: '飞书CLI使用说明',
+                title_highlighted: 'Feishu CLI Guide',
                 result_meta: {
                   doc_types: 'DOCX',
                   token: 'doc_token_123',
@@ -155,10 +155,10 @@ describe('lark tools', () => {
       }),
     )
 
-    const result = await createLarkDocsSearchTool().execute({ query: '飞书CLI' })
+    const result = await createLarkDocsSearchTool().execute({ query: 'Feishu CLI' })
 
     expect(result.success).toBe(true)
-    expect(result.output).toContain('飞书CLI使用说明')
+    expect(result.output).toContain('Feishu CLI Guide')
     expect(result.output).toContain('doc_token_123')
   })
 

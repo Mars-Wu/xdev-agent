@@ -1,8 +1,8 @@
-# Copilot Instructions for claudeClaw / 艾克斯
+# Copilot Instructions for Xdev
 
 ## Project Overview
 
-**艾克斯 (Xdev)** is an autonomous AI butler service running as a systemd user service. It connects to the Zhipu GLM API (Claude-compatible endpoint) and communicates with users via Feishu (Lark) as the primary channel, with a CLI for management. The main application lives in `xdev/`.
+**Xdev** is an autonomous AI assistant designed to run as a long-lived systemd user service. It connects to the Zhipu GLM API through an Anthropic-compatible interface and uses Feishu (Lark) as the main user channel, with a CLI for management. The main application lives in `xdev/`.
 
 ## Build, Test & Service Commands
 
@@ -15,12 +15,13 @@ npm run watch          # incremental tsc watch
 
 npm test               # vitest run (all *.test.ts under src/)
 npm run test:watch     # vitest in watch mode
-npx vitest run src/memory/memory-manager.test.ts  # run single test file
+npx vitest run src/memory/memory-manager.test.ts  # run one test file
 
 npm run test:coverage  # v8 coverage → text/json/html
 ```
 
 Service management:
+
 ```bash
 systemctl --user restart xdev
 systemctl --user status xdev
@@ -40,51 +41,61 @@ Agent Layer (AutonomousAgent polls task board; InProcessAgent for direct calls)
          ↓
 Skills / Tool System (registry-loaded skills + task DAGs + memory + browser)
          ↓
-Plugin SDK (EventBus pub/sub — Feishu plugin is the only built-in consumer)
+Plugin SDK (EventBus pub/sub — Feishu plugin is the built-in consumer)
          ↓
 Storage Layer (SQLite via better-sqlite3, config hot-reload, telemetry)
 ```
 
 Key module map:
-- `src/index.ts` — bootstrap: wires all subsystems, registers Feishu webhook handlers
-- `src/core/llm-client.ts` — single LLMClient wrapper around `@anthropic-ai/sdk`; uses `GLM_CONFIG` (baseURL + apiKey from `ZHIPU_API_KEY`)
-- `src/core/glm-extensions.ts` — Zhipu-specific thinking mode, task complexity analysis
-- `src/agent/autonomous-agent.ts` — polls `tools/task-system.ts` for claimable tasks
-- `src/skills/` — markdown-driven skill definitions loaded at runtime (`builtins/` copied to `dist/skills/` on build)
-- `src/plugin-sdk/event-bus.ts` — all cross-module events go through here (`EventTypes`)
-- `src/gateway/server.ts` — WebSocket server; used by `bin/cli` and external tooling
+
+- `src/index.ts` — bootstrap and Feishu event wiring
+- `src/core/llm-client.ts` — single LLM client wrapper around `@anthropic-ai/sdk`
+- `src/core/glm-extensions.ts` — Zhipu-specific thinking mode and task complexity helpers
+- `src/agent/autonomous-agent.ts` — autonomous task polling loop
+- `src/skills/` — markdown-driven skills copied to `dist/skills/` during build
+- `src/plugin-sdk/event-bus.ts` — cross-module events and `EventTypes`
+- `src/gateway/server.ts` — WebSocket server for the CLI and external tooling
 
 ## Key Conventions
 
 ### LLM / API
-- The project targets the **Zhipu GLM API** with a Claude-compatible base URL. Set `ZHIPU_API_KEY` (or fallback `ANTHROPIC_AUTH_TOKEN`) and optionally `GLM_BASE_URL`.
-- `resolveModelName()` in `src/core/model-config.ts` maps logical model names to GLM-specific strings — always use this instead of hardcoding model IDs.
-- Streaming is the norm: `LLMClient.chat()` returns `AsyncGenerator<ChatEvent>`.
+
+- Use the Zhipu GLM API with `ZHIPU_API_KEY` (or fallback `ANTHROPIC_AUTH_TOKEN`) and optional `GLM_BASE_URL`.
+- Always go through `resolveModelName()` in `src/core/model-config.ts` instead of hardcoding provider model strings.
+- `LLMClient.chat()` streams results as `AsyncGenerator<ChatEvent>`.
 
 ### Skills
-- Built-in skills are markdown files under `src/skills/builtins/`. The build step copies them to `dist/skills/`.
-- New skills follow the same markdown format: front-matter metadata + prompt body.
-- `src/skills/registry.ts` is the single source of truth for available skills.
+
+- Built-in skills live under `src/skills/builtins/` as markdown files.
+- New skills follow the same front-matter + prompt-body format.
+- `src/skills/registry.ts` is the source of truth for skill registration.
 
 ### Plugin System
-- Plugins implement the interface in `src/plugin-sdk/types.ts` (`init()` / `destroy()` / event handlers).
-- Emit and subscribe via `eventBus` from `src/plugin-sdk/event-bus.ts`; never call plugin internals directly.
+
+- Plugins implement the interfaces in `src/plugin-sdk/types.ts`.
+- Use the event bus for integration boundaries; do not call plugin internals directly.
 
 ### Tool System
-- Tools in `src/tools/` are registered in `src/tools/index.ts`.
-- Task graphs (`task-system.ts`) support DAG-style dependencies; `task-tool.ts` exposes this to the LLM.
-- Background jobs (`background-tool.ts` / `background-tasks.ts`) run in-process — no worker threads.
+
+- Register tools in `src/tools/index.ts`.
+- Task graphs in `task-system.ts` are DAG-based.
+- Background jobs run in-process.
 
 ### Configuration
-- Runtime config lives in `config/` (YAML + env). `configManager` in `src/config/index.ts` supports hot-reload.
+
+- Runtime config lives in `config/` and supports hot reload through `configManager`.
 - Path constants are exported from `src/config/index.ts` as `PATHS`.
-- Copy `.env.example` to `.env`; required vars: `ZHIPU_API_KEY`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`.
+- Copy `.env.example` to `.env`; required values are `ZHIPU_API_KEY`, `FEISHU_APP_ID`, and `FEISHU_APP_SECRET`.
 
 ### TypeScript
-- `strict: true`, target `ES2022`, module `commonjs`.
-- All imports use relative paths (no path aliases configured).
-- `src/utils/logger.ts` provides `createLogger(name)` — use this, not `console.log`.
+
+- `strict: true`, target `ES2022`, module `commonjs`
+- Relative imports only
+- Use `createLogger(name)` from `src/utils/logger.ts`
 
 ### Worker Pattern
-- The `workers/` directory stores timestamped self-optimization sessions. Each session has a `task.md` and `CLAUDE.md`. `CLAUDE.md` at the repo root is a symlink to the active worker session.
-- `xdev/workspace/` is the working directory used by agents during autonomous task execution.
+
+- `workers/` stores timestamped self-optimization sessions.
+- Each worker session includes `task.md` plus its session-specific instruction file.
+- `xdev/workspace/` is the working directory used by autonomous runs.
+

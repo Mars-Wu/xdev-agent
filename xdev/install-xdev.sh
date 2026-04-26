@@ -1,6 +1,6 @@
 #!/bin/bash
-# install-xdev.sh - systemd 系统服务安装脚本
-# 使用方法: sudo ./install-xdev.sh
+# install-xdev.sh - install Xdev as a systemd service
+# Usage: sudo ./install-xdev.sh
 
 set -euo pipefail
 
@@ -10,56 +10,56 @@ XDEV_OPT="/opt/xdev"
 XDEV_USER="xdev"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== 安装AI管家艾克斯 ==="
+echo "=== Installing Xdev ==="
 echo ""
 
-# 检查是否以root运行
+# Ensure the script is running as root
 if [ "$EUID" -ne 0 ]; then
-  echo "请使用 sudo 运行此脚本"
+  echo "Please run this script with sudo"
   exit 1
 fi
 
-# 1. 创建用户
+# 1. Create the service user
 if ! id "$XDEV_USER" &>/dev/null; then
     useradd -r -s /bin/bash -d "$XDEV_HOME" "$XDEV_USER"
-    echo "✓ 创建用户 $XDEV_USER"
+    echo "✓ Created user $XDEV_USER"
 else
-    echo "✓ 用户 $XDEV_USER 已存在"
+    echo "✓ User $XDEV_USER already exists"
 fi
 
-# 2. 创建目录
+# 2. Create directories
 mkdir -p "$XDEV_HOME"/{data,workers,sessions,scripts,config}
 mkdir -p "$XDEV_LOG"
 mkdir -p "$XDEV_OPT"
 mkdir -p /etc/xdev
-echo "✓ 创建目录结构"
+echo "✓ Created directory structure"
 
-# 3. 复制脚本
+# 3. Copy helper scripts
 if [ -d "$SCRIPT_DIR/scripts" ]; then
     cp "$SCRIPT_DIR"/scripts/*.sh "$XDEV_HOME/scripts/"
     chmod +x "$XDEV_HOME/scripts/"*.sh
-    echo "✓ 复制Hook脚本"
+    echo "✓ Copied helper scripts"
 fi
 
-# 4. 复制配置文件
+# 4. Copy configuration
 if [ -f "$SCRIPT_DIR/config/config.yaml" ]; then
     cp "$SCRIPT_DIR/config/config.yaml" "$XDEV_HOME/config/"
-    echo "✓ 复制配置文件"
+    echo "✓ Copied configuration"
 fi
 
-# 5. 创建环境变量文件
+# 5. Create the environment file
 if [ ! -f /etc/xdev/environment ]; then
     cat > /etc/xdev/environment << 'EOF'
-# GLM API（必需）
+# GLM API (required)
 ZHIPU_API_KEY=your-key-here
 ZHIPU_API_BASE_URL=https://open.bigmodel.cn/api/anthropic
 
-# 飞书配置（必需）
+# Feishu settings (required)
 FEISHU_APP_ID=your-app-id
 FEISHU_APP_SECRET=your-secret
 FEISHU_USE_WEBSOCKET=true
 
-# 艾克斯配置
+# Xdev runtime settings
 XDEV_HOME=/var/lib/xdev
 XDEV_DB=/var/lib/xdev/data/xdev.db
 XDEV_GATEWAY_HOST=127.0.0.1
@@ -75,96 +75,96 @@ XDEV_RETRY_DELAY=1000
 XDEV_LOG_LEVEL=info
 XDEV_API_TOKEN=change-me-for-test-endpoints
 
-# 说明
-# 1. 飞书应用需启用机器人能力与长连接
-# 2. 订阅事件: im.message.receive_v1
-# 3. 如需访问 /test/message 等测试接口，请把 XDEV_API_TOKEN 改为强随机值
+# Notes
+# 1. Enable bot capability and long connections in the Feishu app
+# 2. Subscribe to im.message.receive_v1
+# 3. If you expose /test/message or similar endpoints, replace XDEV_API_TOKEN with a strong random value
 
-# 兼容别名（可选）
+# Compatibility aliases (optional)
 # ANTHROPIC_AUTH_TOKEN=your-key-here
 # ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic
 EOF
     chmod 600 /etc/xdev/environment
-    echo "✓ 创建环境变量文件（请编辑 /etc/xdev/environment）"
+    echo "✓ Created /etc/xdev/environment (edit it before first production use)"
 else
-    echo "✓ 环境变量文件已存在"
+    echo "✓ Environment file already exists"
 fi
 
-# 6. 编译并安装应用
+# 6. Build and install the application
 if [ -f "$SCRIPT_DIR/package.json" ]; then
-    echo "正在编译应用..."
+    echo "Building application..."
     cd "$SCRIPT_DIR"
 
-    # 安装依赖
+    # Install dependencies
     if [ -f "package-lock.json" ]; then
         npm ci
     else
         npm install
     fi
 
-    # 编译TypeScript
+    # Build TypeScript
     npm run build
 
-    # 复制到 /opt，先清理旧构建产物，避免残留孤儿文件
+    # Copy to /opt after removing old build outputs
     rm -rf "$XDEV_OPT"
     mkdir -p "$XDEV_OPT"
     cp -r dist package.json package-lock.json node_modules "$XDEV_OPT/"
 
-    echo "✓ 编译并安装应用"
+    echo "✓ Built and installed the application"
 fi
 
-# 7. 设置权限
+# 7. Set ownership
 chown -R "$XDEV_USER:$XDEV_USER" "$XDEV_HOME" "$XDEV_LOG" "$XDEV_OPT"
-echo "✓ 设置权限"
+echo "✓ Updated ownership"
 
-# 8. 安装命令行入口
+# 8. Install the CLI entrypoint
 cat > /usr/local/bin/xdev <<'EOF'
 #!/bin/sh
 exec node /opt/xdev/dist/cli.js "$@"
 EOF
 chmod +x /usr/local/bin/xdev
-echo "✓ 安装 CLI 命令 /usr/local/bin/xdev"
+echo "✓ Installed CLI command at /usr/local/bin/xdev"
 
-# 9. 安装Systemd服务
+# 9. Install the systemd unit
 if [ -f "$SCRIPT_DIR/xdev.service" ]; then
     cp "$SCRIPT_DIR/xdev.service" /etc/systemd/system/
     systemctl daemon-reload
     systemctl enable xdev.service
-    echo "✓ 安装Systemd服务"
+    echo "✓ Installed systemd service"
 fi
 
 echo ""
-echo "运行安装后自检..."
+echo "Running post-install checks..."
 if /usr/local/bin/xdev doctor --env-file /etc/xdev/environment; then
-    echo "✓ doctor 检查通过"
+    echo "✓ doctor completed successfully"
 else
-    echo "! doctor 检查发现缺项，请先编辑 /etc/xdev/environment 后重新运行:"
+    echo "! doctor found missing configuration. Edit /etc/xdev/environment and run again:"
     echo "  sudo xdev doctor --env-file /etc/xdev/environment"
 fi
 
 echo ""
-echo "=== 安装完成 ==="
+echo "=== Installation complete ==="
 echo ""
-echo "下一步操作:"
-echo "1. 编辑 /etc/xdev/environment 填写飞书配置"
-echo "   - ZHIPU_API_KEY: 智谱 API Key"
-echo "   - FEISHU_APP_ID: 飞书应用ID"
-echo "   - FEISHU_APP_SECRET: 飞书应用密钥"
-echo "   - 参考 xdev/docs/GUIDE.md 完成飞书机器人与长连接配置"
+echo "Next steps:"
+echo "1. Edit /etc/xdev/environment with your Feishu and GLM settings"
+echo "   - ZHIPU_API_KEY: Zhipu API key"
+echo "   - FEISHU_APP_ID: Feishu app ID"
+echo "   - FEISHU_APP_SECRET: Feishu app secret"
+echo "   - See xdev/docs/GUIDE.md for Feishu bot and long-connection setup"
 echo ""
-echo "2. 启动服务"
+echo "2. Start the service"
 echo "   sudo systemctl start xdev"
 echo ""
-echo "3. 查看状态和日志"
+echo "3. Check service status and logs"
 echo "   sudo systemctl status xdev"
 echo "   sudo journalctl -u xdev -f"
 echo ""
-echo "4. 运行自检和冒烟检查"
+echo "4. Run diagnostics and smoke checks"
 echo "   sudo xdev doctor --env-file /etc/xdev/environment"
 echo "   sudo xdev smoke-check --env-file /etc/xdev/environment"
 echo ""
-echo "5. 导出运行状态"
+echo "5. Export runtime status"
 echo "   sudo xdev export-status"
 echo ""
-echo "6. 测试连接"
+echo "6. Check the health endpoint"
 echo "   curl http://localhost:8081/health"

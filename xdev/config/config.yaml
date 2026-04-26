@@ -1,5 +1,5 @@
 # config/config.yaml
-# AI管家艾克斯配置文件
+# Xdev configuration file
 
 server:
   host: "0.0.0.0"
@@ -14,7 +14,7 @@ xdev:
 feishu:
   app_id: "${FEISHU_APP_ID}"
   app_secret: "${FEISHU_APP_SECRET}"
-  use_websocket: true  # 开发时使用WebSocket，生产环境可使用Webhook
+  use_websocket: true  # Prefer WebSocket in development; webhook mode can be used in production
   # webhook_path: "/webhook/feishu"
 
 worker:

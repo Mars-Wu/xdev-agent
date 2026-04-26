@@ -1,5 +1,5 @@
 // src/context/subdirectory-hints.ts
-// 子目录上下文懒加载：工具访问新目录时自动注入 AGENTS.md/CLAUDE.md
+// 子目录上下文懒加载：工具访问新目录时自动注入 XDEV.md/AGENTS.md
 // 参考: hermes-agent/agent/subdirectory_hints.py
 
 import * as fs from 'fs';
@@ -8,7 +8,7 @@ import { createLogger } from '../utils/logger';
 
 const logger = createLogger('subdir-hints');
 
-const HINT_FILENAMES = ['AGENTS.md', 'agents.md', 'CLAUDE.md', 'claude.md', '.cursorrules'];
+const HINT_FILENAMES = ['XDEV.md', 'xdev.md', 'AGENTS.md', 'agents.md', '.cursorrules'];
 const MAX_HINT_CHARS = 8_000;
 const MAX_ANCESTOR_WALK = 5;
 

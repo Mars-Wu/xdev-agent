@@ -1,6 +1,6 @@
 #!/bin/bash
 # scripts/subagent_notify.sh
-# 子代理完成时通知
+# Notify Xdev when a subagent finishes
 
 WORKER_ID="$1"
 XDEV_HOST="${XDEV_HOST:-localhost}"
@@ -8,7 +8,7 @@ XDEV_PORT="${XDEV_PORT:-8081}"
 
 INPUT=$(cat)
 
-# 检查jq是否可用
+# jq is required to parse hook payloads
 if ! command -v jq &> /dev/null; then
   echo "jq not found, skipping notification" >&2
   exit 0
@@ -23,7 +23,7 @@ if [ -z "$WORKER_ID" ]; then
   WORKER_ID="$PARENT_ID"
 fi
 
-# 记录子代理活动
+# Record subagent activity
 curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/internal/worker/subagent" \
   -H "Content-Type: application/json" \
   -d "{

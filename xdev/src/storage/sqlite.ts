@@ -1,5 +1,5 @@
 // src/storage/sqlite.ts
-// SQLite存储封装 - 支持会话、Worker（兼容）、专家和专家会话
+// SQLite存储封装 - 支持会话、Worker、专家和专家会话
 
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -18,7 +18,7 @@ import {
   CronTaskRecord,
 } from './types';
 
-// ==================== 飞书会话记录（兼容旧版）====================
+// ==================== 飞书会话记录 ====================
 
 export interface SessionRecord {
   id: string;
@@ -32,7 +32,7 @@ export interface SessionRecord {
   updatedAt: string;
 }
 
-// ==================== Worker 记录（兼容旧版）====================
+// ==================== Worker 记录 ====================
 
 export interface WorkerRecord {
   id: string;
@@ -40,7 +40,7 @@ export interface WorkerRecord {
   sessionId: string;
   status: string;
   tmuxSession: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   task: string; // JSON
   progress: string; // JSON
   result: string; // JSON
@@ -86,7 +86,7 @@ export class SQLiteStorage {
   }
 
   private initTables(): void {
-    // ==================== 飞书会话表（兼容旧版）====================
+    // ==================== 飞书会话表 ====================
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -101,7 +101,7 @@ export class SQLiteStorage {
       )
     `);
 
-    // ==================== Worker 表（兼容旧版）====================
+    // ==================== Worker 表 ====================
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS workers (
         id TEXT PRIMARY KEY,
@@ -109,7 +109,7 @@ export class SQLiteStorage {
         sessionId TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
         tmuxSession TEXT,
-        claudeSessionId TEXT,
+        agentSessionId TEXT,
         task TEXT DEFAULT '{}',
         progress TEXT DEFAULT '{}',
         result TEXT,
@@ -156,7 +156,7 @@ export class SQLiteStorage {
         result_details TEXT,
         result_artifacts TEXT,
         work_dir TEXT,
-        claude_session_id TEXT,
+        agent_session_id TEXT,
         FOREIGN KEY (expert_id) REFERENCES experts(id)
       )
     `);
@@ -467,7 +467,7 @@ export class SQLiteStorage {
     return result.changes > 0;
   }
 
-  // ==================== 飞书会话操作（兼容旧版）====================
+  // ==================== 飞书会话操作 ====================
 
   getSession(id: string): SessionRecord | undefined {
     const stmt = this.db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -511,7 +511,7 @@ export class SQLiteStorage {
     stmt.run(context, id);
   }
 
-  // ==================== Worker 操作（兼容旧版）====================
+  // ==================== Worker 操作 ====================
 
   getWorker(id: string): WorkerRecord | undefined {
     const stmt = this.db.prepare('SELECT * FROM workers WHERE id = ?');
@@ -545,8 +545,8 @@ export class SQLiteStorage {
 
   saveWorker(worker: Partial<WorkerRecord> & { id: string }): void {
     const stmt = this.db.prepare(`
-      INSERT INTO workers (id, name, sessionId, status, tmuxSession, claudeSessionId, task, progress, result, hooks, startedAt)
-      VALUES (@id, @name, @sessionId, @status, @tmuxSession, @claudeSessionId, @task, @progress, @result, @hooks, @startedAt)
+      INSERT INTO workers (id, name, sessionId, status, tmuxSession, agentSessionId, task, progress, result, hooks, startedAt)
+      VALUES (@id, @name, @sessionId, @status, @tmuxSession, @agentSessionId, @task, @progress, @result, @hooks, @startedAt)
       ON CONFLICT(id) DO UPDATE SET
         name = @name,
         status = @status,
@@ -561,7 +561,7 @@ export class SQLiteStorage {
       sessionId: worker.sessionId || '',
       status: worker.status || 'pending',
       tmuxSession: worker.tmuxSession || '',
-      claudeSessionId: worker.claudeSessionId || '',
+      agentSessionId: worker.agentSessionId || '',
       task: worker.task || '{}',
       progress: worker.progress || '{}',
       result: worker.result || null,
@@ -736,13 +736,13 @@ export class SQLiteStorage {
         id, expert_id, expert_name, task_description, task_category, task_tags,
         status, model, started_at, completed_at, duration,
         result_success, result_summary, result_details, result_artifacts,
-        work_dir, claude_session_id
+        work_dir, agent_session_id
       )
       VALUES (
         @id, @expert_id, @expert_name, @task_description, @task_category, @task_tags,
         @status, @model, @started_at, @completed_at, @duration,
         @result_success, @result_summary, @result_details, @result_artifacts,
-        @work_dir, @claude_session_id
+        @work_dir, @agent_session_id
       )
       ON CONFLICT(id) DO UPDATE SET
         status = @status,
@@ -752,7 +752,7 @@ export class SQLiteStorage {
         result_summary = @result_summary,
         result_details = @result_details,
         result_artifacts = @result_artifacts,
-        claude_session_id = @claude_session_id
+        agent_session_id = @agent_session_id
     `);
 
     stmt.run({
@@ -772,7 +772,7 @@ export class SQLiteStorage {
       result_details: session.result?.details || null,
       result_artifacts: session.result?.artifacts ? JSON.stringify(session.result.artifacts) : null,
       work_dir: session.workDir || null,
-      claude_session_id: session.claudeSessionId || null,
+      agent_session_id: session.agentSessionId || null,
     });
   }
 
@@ -858,7 +858,7 @@ export class SQLiteStorage {
       execution,
       result,
       workDir: record.work_dir || undefined,
-      claudeSessionId: record.claude_session_id || undefined,
+      agentSessionId: record.agent_session_id || undefined,
     };
   }
 

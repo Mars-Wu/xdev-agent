@@ -1,7 +1,7 @@
 {
   "name": "xdev",
   "version": "3.1.0",
-  "description": "AI管家艾克斯 - AI Butler powered by Claude",
+  "description": "Xdev AI butler for Feishu, powered by Zhipu GLM",
   "main": "dist/index.js",
   "bin": {
     "xdev": "dist/cli.js"
@@ -23,9 +23,10 @@
   },
   "keywords": [
     "ai",
-    "claude",
+    "glm",
     "feishu",
-    "butler"
+    "butler",
+    "agent"
   ],
   "author": "",
   "license": "MIT",

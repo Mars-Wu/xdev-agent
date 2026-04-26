@@ -249,7 +249,7 @@ export class FileAnalyzer {
 
   /**
    * 分析图片文件
-   * 图片不进行文本提取，而是返回路径供 Claude 视觉处理
+   * 图片不进行文本提取，而是返回路径供多模态模型处理
    */
   private async analyzeImage(filePath: string, mimeType: string): Promise<FileAnalysis> {
     try {

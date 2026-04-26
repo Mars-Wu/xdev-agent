@@ -1,7 +1,7 @@
 // src/storage/types.ts
 // 存储层类型定义 - 独立定义，不依赖已删除的模块
 
-// ==================== 飞书会话记录（兼容旧版）====================
+// ==================== 飞书会话记录 ====================
 
 export interface SessionRecord {
   id: string
@@ -15,7 +15,7 @@ export interface SessionRecord {
   updatedAt: string
 }
 
-// ==================== Worker 记录（兼容旧版）====================
+// ==================== Worker 记录 ====================
 
 export interface WorkerRecord {
   id: string
@@ -23,7 +23,7 @@ export interface WorkerRecord {
   sessionId: string
   status: string
   tmuxSession: string
-  claudeSessionId: string
+  agentSessionId: string
   task: string // JSON
   progress: string // JSON
   result: string // JSON
@@ -46,7 +46,7 @@ export interface FileRecord {
   created_at: string
 }
 
-// ==================== 专家系统类型（兼容旧数据）====================
+// ==================== 专家系统类型 ====================
 
 /**
  * 专家统计
@@ -119,7 +119,7 @@ export interface ExpertSession {
   execution: SessionExecution
   result?: SessionResult
   workDir?: string
-  claudeSessionId?: string
+  agentSessionId?: string
 }
 
 /**
@@ -158,10 +158,10 @@ export interface SessionRecord {
   result_details?: string
   result_artifacts?: string
   work_dir?: string
-  claude_session_id?: string
+  agent_session_id?: string
 }
 
-// ==================== Cron 定时任务类型（兼容旧数据）====================
+// ==================== Cron 定时任务类型 ====================
 
 /**
  * Cron 任务记录

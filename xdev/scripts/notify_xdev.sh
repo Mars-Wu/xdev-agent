@@ -1,31 +1,41 @@
 #!/bin/bash
 # scripts/notify_xdev.sh
-# Worker向艾克斯发送进度通知
+# Send worker progress notifications to Xdev
 
 WORKER_ID="$1"
 XDEV_HOST="${XDEV_HOST:-localhost}"
 XDEV_PORT="${XDEV_PORT:-8081}"
 
-# 从stdin读取hook数据
+# Read hook payload from stdin
 INPUT=$(cat)
 
-# 提取关键信息
+# Extract relevant fields
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 NOTIFICATION=$(echo "$INPUT" | jq -r '.notification // empty' 2>/dev/null)
 REASON=$(echo "$INPUT" | jq -r '.reason // "progress"' 2>/dev/null)
 
-# 如果没有提供worker_id，从session_id提取
+# Fall back to the session identifier when no worker id was provided
 if [ -z "$WORKER_ID" ]; then
   WORKER_ID="$SESSION_ID"
 fi
 
-# 检查jq是否可用
+# jq is required to parse hook payloads
 if ! command -v jq &> /dev/null; then
   echo "jq not found, skipping notification" >&2
   exit 0
 fi
 
-# 发送到艾克斯
+resolve_xdev_home() {
+  if [ -n "${XDEV_HOME:-}" ]; then
+    echo "$XDEV_HOME"
+  elif [ "$(id -un)" = "xdev" ]; then
+    echo "${HOME:-/var/lib/xdev}"
+  else
+    echo "${HOME}/.xdev"
+  fi
+}
+
+# Send the notification to Xdev
 if [ -n "$WORKER_ID" ] && [ -n "$NOTIFICATION" ]; then
   curl -s -X POST "http://${XDEV_HOST}:${XDEV_PORT}/internal/worker/notify" \
     -H "Content-Type: application/json" \
@@ -37,8 +47,8 @@ if [ -n "$WORKER_ID" ] && [ -n "$NOTIFICATION" ]; then
     }" > /dev/null 2>&1
 fi
 
-# 同时写入进度文件（备用）
-XDEV_HOME="${XDEV_HOME:-/var/lib/xdev}"
+# Also write a local progress file when the runtime worker directory exists
+XDEV_HOME="$(resolve_xdev_home)"
 PROGRESS_FILE="${XDEV_HOME}/workers/${WORKER_ID}/progress.json"
 if [ -d "$(dirname "$PROGRESS_FILE")" ]; then
   echo "$INPUT" > "$PROGRESS_FILE"

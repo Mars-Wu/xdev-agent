@@ -35,11 +35,11 @@ export enum ErrorCode {
   API_NOT_FOUND = 'ERR_4002',
   API_RATE_LIMITED = 'ERR_4003',
 
-  // Claude 错误 (5xxx)
-  CLAUDE_SPAWN_FAILED = 'ERR_5000',
-  CLAUDE_TIMEOUT = 'ERR_5001',
-  CLAUDE_RESPONSE_ERROR = 'ERR_5002',
-  CLAUDE_SESSION_ERROR = 'ERR_5003',
+  // Agent / model runtime errors (5xxx)
+  AGENT_SPAWN_FAILED = 'ERR_5000',
+  AGENT_TIMEOUT = 'ERR_5001',
+  AGENT_RESPONSE_ERROR = 'ERR_5002',
+  AGENT_SESSION_ERROR = 'ERR_5003',
 
   // 飞书错误 (6xxx)
   FEISHU_SEND_FAILED = 'ERR_6000',
@@ -333,7 +333,7 @@ export class ErrorHandler {
     // 根据错误代码判断
     const retryableCodes = [
       ErrorCode.MESSAGE_TIMEOUT,
-      ErrorCode.CLAUDE_TIMEOUT,
+      ErrorCode.AGENT_TIMEOUT,
       ErrorCode.EXPERT_TIMEOUT,
       ErrorCode.FEISHU_SEND_FAILED,
       ErrorCode.FEISHU_CONNECTION_ERROR,

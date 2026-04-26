@@ -1,5 +1,5 @@
 // src/config.ts
-// 统一配置管理 - 艾克斯独立配置，不再依赖 Claude CLI
+// 统一配置管理 - 艾克斯独立配置
 // 配置目录: ~/.xdev/
 
 import * as path from 'path';
@@ -24,7 +24,7 @@ const logger = createLogger('config');
  *   routerModel    — Stage 1 话题路由器（单次 JSON 分类）
  *   selectorModel  — Stage 2.5 回复选择器（选最佳候选段）
  *   backgroundModel— Background Pass（异步记忆提取/话题摘要）
- *   coderModel     — 编程子 Agent（GLM-5，当前 code plan 下更稳）
+  *   coderModel     — 编程子 Agent（GLM-5，当前 code plan 下更稳）
  *
  * 可在 ~/.xdev/config.json 的 "model" 字段中覆盖，
  * 也可通过环境变量 XDEV_MODEL / XDEV_ROUTER_MODEL /
@@ -39,7 +39,7 @@ export interface ModelConfig {
   selectorModel: string;
   /** 后台记忆/摘要模型（Background Pass）*/
   backgroundModel: string;
-  /** 编程子 Agent 模型（GLM-5，对齐 Claude Opus 编程能力）*/
+  /** 编程子 Agent 模型（GLM-5，偏向复杂编码任务）*/
   coderModel: string;
   /** 辅助任务模型（上下文压缩摘要、标题生成、路由分类，使用廉价快速模型）*/
   auxiliaryModel?: string;
@@ -576,7 +576,7 @@ export function getSystemPromptPath(): string {
  * 获取艾克斯项目代码目录
  */
 export function getXdevProjectDir(): string {
-  return process.env.XDEV_DIR || path.join(os.homedir(), 'data', 'claudeClaw', 'xdev');
+  return process.env.XDEV_DIR || path.resolve(__dirname, '..');
 }
 
 /**

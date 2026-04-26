@@ -1,222 +1,32 @@
-# Harness 工程最佳实践
+# Harness Engineering Best Practices
 
-> 综合整理自 OpenAI 和 Anthropic 关于 AI Agent 编码智能体的工程实践
+This note consolidates best practices for repositories that host tool-using coding agents.
 
-## 概述
+## Environment design
 
-Harness 工程是指设计和构建支持 AI Agent 有效工作的环境、工具和流程的系统化方法。随着 AI Agent 能力的增强，它们需要处理跨越多个上下文窗口的复杂任务，因此构建可靠的 Harness 系统变得至关重要。
+- Keep guidance files short and composable.
+- Let the repository hold the authoritative state.
+- Use clear directory boundaries and predictable file names.
 
-核心理念：**人类掌舵，智能体执行**。工程师的工作重点从编写代码转向设计环境、明确意图和构建反馈回路。
+## Feedback loops
 
----
+- Make tests cheap to run.
+- Keep logs readable and easy to correlate with actions.
+- Export structured status when the runtime is long-lived.
 
-## 一、环境设计原则
+## Safety
 
-### 1.1 代码仓库作为记录系统
+- Constrain shell and network access.
+- Redact secrets in logs and surfaced tool output.
+- Require explicit handling for destructive actions.
 
-**核心原则：给 Agent 一张地图，而不是一本 1000 页的说明书。**
+## Workflow design
 
-- **情境是稀缺资源**：巨大的指令文件会挤掉任务、代码和相关文档
-- **过多的指导反而无效**：当一切都"重要"时，一切都不重要了
-- **避免腐烂**：庞杂的手册会变成陈旧规则的坟场
-- **可验证性**：单个 blob 不适合机械检查
+- Prefer incremental progress over one-shot rewrites.
+- Record what changed and what still blocks completion.
+- Separate stable system guidance from task-specific notes.
 
-**实践方案：**
-```
-AGENTS.md (~100 行) → 作为内容目录/索引
-docs/                  → 深度知识存储
-├── architecture/   → 架构文档
-├── features/       → 功能规格
-├── plans/          → 执行计划
-└── decisions/      → 决策日志
-```
+## Application to xdev
 
-### 1.2 初始化 Agent (Initializer Agent)
+xdev benefits most from strong observability, durable task state, and clear docs around service operation.
 
-**首次运行时的专门任务：**
-
-1. 创建 `init.sh` 脚本 - 启动开发服务器
-2. 创建 `progress.txt` 文件 - 记录 Agent 工作日志
-3. 创建初始 git commit - 展示添加的文件
-4. 创建功能清单文件 - 详尽的功能需求列表
-
-### 1.3 环境可读性
-
-**让应用程序对 Agent 直接可读：**
-
-- Git worktree 支持按更改启动实例
-- Chrome DevTools 协议接入 - DOM 快照、截图、导航
-- 可观测性工具 - LogQL 查询日志、PromQL 查询指标
-- 本地临时堆栈 - 任务完成后自动清理
-
----
-
-## 二、增量式工作流程
-### 2.1 一次一个功能
-
-**核心原则：** 避免 Agent 尝试一次性完成所有工作。
-
-- 编码 Agent 每次只处理一个功能
-- 功能完成后必须验证才能标记为"通过"
-- 使用 JSON 格式存储功能列表（比 Markdown 更不容易被篡改）
-
-### 2.2 会话开始标准流程
-```
-1. pwd                    → 确认工作目录
-2. 读取 git log          → 了解最近工作
-3. 读取 progress.txt     → 获取进度信息
-4. 读取 feature_list.json → 选择下一个待完成功能
-5. 运行 init.sh          → 启动开发服务器
-6. 基础功能验证          → 确保应用未处于损坏状态
-7. 开始新功能开发        → 增量推进
-```
-
-### 2.3 会话结束标准流程
-
-```
-1. 运行测试验证
-2. git commit（描述性提交信息）
-3. 更新 progress.txt
-4. 确保代码处于"干净状态"（可合并状态）
-```
-
----
-
-## 三、架构约束与品味
-### 3.1 强制执行不变量
-
-**通过自定义工具强制执行规则，而非微观管理实现：**
-
-- 自定义 linter 强制执行结构规则
-- 结构测试验证架构约束
-- 错误信息中包含修复指令
-
-**分层架构示例：**
-```
-Types → Config → Repo → Service → Runtime → UI
-
-横切关注点（认证、连接器、遥测、功能标志）通过单一显式接口：Providers
-```
-
-### 3.2 品味不变式
-
-- 结构化日志记录
-- 命名约定（模式、类型）
-- 文件大小限制
-- 平台可靠性要求
-- 共享工具包优先于手工辅助函数
-- 边界验证优先于"YOLO 式"探测
-
-### 3.3 黄金原则编码
-
-将主观品味规则编码为机械规则：
-
-1. 共享工具包优先于手工辅助函数（不变式集中管理）
-2. 边界验证或类型化 SDK（避免猜测结构）
-
----
-
-## 四、反馈回路与质量控制
-### 4.1 测试策略
-
-- **端到端测试**：使用浏览器自动化工具（如 Puppeteer MCP）
-- **人类用户视角**：所有测试按人类用户方式进行
-- **自验证**：Agent 只有在仔细测试后才能标记功能为"通过"
-
-### 4.2 Agent 对 Agent 审核
-
-- 初始：人类审核 PR
-- 演进：逐步将审核工作调整为 Agent 对 Agent 方式
-- Agent 可以拉取审查反馈、行内回复、推送更新
-- Agent 可以压缩并合并自己的 PR
-
-### 4.3 垃圾回收机制
-
-**技术债务处理：** 持续小额偿还优于一次性大额偿还。
-
-- 定期运行后台 Agent 扫描偏差
-- 更新质量等级
-- 发起针对性重构 PR
-- 大多数可在 1 分钟内审查并自动合并
-
----
-
-## 五、常见失败模式与解决方案
-| 问题 | 原因 | 解决方案 |
-|------|------|----------|
-| 提前宣布完成 | 缺乏明确的功能清单 | 创建详尽的功能列表，所有功能初始标记为"失败" |
-| 上下文溢出 | 尝试一次性完成所有工作 | 增量式工作，一次一个功能 |
-| 环境损坏 | 缺乏状态追踪 | progress.txt + git commit + 会话结束验证 |
-| 功能误标记 | 缺乏测试 | 端到端测试，自验证 |
-| 启动困难 | 缺乏启动脚本 | init.sh 脚本 |
-| 代码漂移 | Agent 复制不良模式 | 黄金原则 + 定期垃圾回收 |
-
----
-
-## 六、吞吐量优化
-### 6.1 合并策略调整
-
-在高吞吐量环境中：
-
-- 最小化阻塞合并门
-- PR 生命周期短
-- 偶发测试失败通过重跑解决，而非无限期阻塞
-- **纠错成本低，等待成本高**
-
-### 6.2 效率指标
-
-- OpenAI 团队：3 名工程师，5 个月，100 万行代码，1500 个 PR
-- 平均每位工程师每天 3.5 个 PR
-- 估计效率提升：传统方式的 10 倍
-
----
-
-## 七、文档管理
-### 7.1 渐进式披露
-
-Agent 从小而稳定的切入点开始，被指导下一步去哪里查看。
-
-### 7.2 文档验证
-
-- 专职 linter 和 CI 作业验证知识库更新状况
-- 交叉链接验证
-- 结构正确性检查
-- "doc-gardening" Agent 扫描过时文档并发起修复 PR
-
-### 7.3 计划作为一等工件
-
-- 临时轻量计划用于小幅变更
-- 复杂工作记录在执行计划中
-- 进度和决策日志提交到代码仓库
-- 活跃计划、已完成计划、已知技术债务版本控制
-
----
-
-## 八、未来方向
-
-1. **多 Agent 架构**：专业化 Agent（测试、QA、清理）可能优于通用 Agent
-2. **领域泛化**：将经验应用到科学研究、金融建模等领域
-3. **架构演进**：完全由 Agent 生成的系统，架构连贯性如何随时间演变
-
----
-
-## 总结
-
-构建可靠的 Harness 系统，核心是：
-
-1. **环境设计** - 为 Agent 提供清晰、可导航的工作环境
-2. **增量工作** - 一次一个功能，避免上下文溢出
-3. **状态追踪** - progress 文件 + git 历史 + 功能清单
-4. **测试验证** - 端到端测试，自验证
-5. **架构约束** - 强制执行不变量，允许实现自由
-6. **反馈回路** - 将人类品味编码为工具规则
-7. **垃圾回收** - 持续处理技术债务
-
-**最终目标：** 设计环境、反馈回路和控制系统，帮助 Agent 实现大规模构建和维护复杂、可靠软件的目标。
-
----
-
-## 参考资料
-
-- [OpenAI: Harness Engineering](https://openai.com/zh-Hans-CN/index/harness-engineering) - Codex 驱动的软件开发
-- [Anthropic: Effective Harnesses for Long-Running Agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) - 多上下文窗口 Agent 工作流

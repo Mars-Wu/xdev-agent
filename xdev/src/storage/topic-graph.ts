@@ -102,7 +102,7 @@ export class TopicGraph {
   }
 
   /**
-   * 初始化数据库 schema（幂等）
+   * 初始化数据库 schema
    */
   init(): void {
     this.db.exec(`
@@ -147,9 +147,6 @@ export class TopicGraph {
       CREATE INDEX IF NOT EXISTS idx_topics_updated ON topics(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_topics_status ON topics(status);
     `)
-    this.ensureColumn('topic_relations', 'confidence', 'REAL')
-    this.ensureColumn('topic_relations', 'provenance', 'TEXT')
-    this.ensureColumn('topic_relations', 'evidence', 'TEXT')
     logger.info('话题图 schema 初始化完成')
   }
 
@@ -495,13 +492,6 @@ export class TopicGraph {
     }
   }
 
-  private ensureColumn(table: string, column: string, definition: string): void {
-    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
-    if (columns.some(item => item.name === column)) {
-      return
-    }
-    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
-  }
 }
 
 export function renderTopicGraphSnapshotMarkdown(snapshot: TopicGraphSnapshot): string {

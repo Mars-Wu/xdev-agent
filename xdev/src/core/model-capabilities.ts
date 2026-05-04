@@ -9,6 +9,7 @@ import {
   DEFAULT_MAIN_MODEL,
   listTextCatalogModels,
   resolveCatalogModelId,
+  type ModelProvider,
   type TextModelCatalogEntry,
 } from './model-catalog'
 
@@ -20,7 +21,7 @@ const logger = createLogger('model-capabilities')
 export interface ModelCapability {
   id: string
   name: string
-  provider: 'glm'
+  provider: ModelProvider
 
   // 上下文限制
   contextWindow: number // 最大输入 tokens

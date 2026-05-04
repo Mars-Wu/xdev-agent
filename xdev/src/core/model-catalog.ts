@@ -1,8 +1,20 @@
 // src/core/model-catalog.ts
 // 模型目录：统一维护模型定义、别名、能力、成本和推荐角色
 
-export type ModelProvider = 'glm'
+export type ModelProvider = 'glm' | 'deepseek'
 export type ModelTransport = 'anthropic-messages' | 'native-chat-completions'
+export type ModelPreset = 'glm-default' | 'deepseek-hybrid' | 'deepseek-all-pro' | 'deepseek-all-flash'
+
+export interface ModelPresetConfig {
+  provider: ModelProvider
+  defaultModel: string
+  routerModel: string
+  selectorModel: string
+  backgroundModel: string
+  coderModel: string
+  auxiliaryModel: string
+  fallbackModel: string
+}
 
 export interface TextModelCatalogEntry {
   kind: 'text'
@@ -135,6 +147,42 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
     defaultRoles: ['main'],
   },
   {
+    kind: 'text',
+    id: 'deepseek-v4-flash',
+    name: 'DeepSeek-V4-Flash',
+    provider: 'deepseek',
+    aliases: ['deepseek-v4-flash', 'deepseek-flash', 'ds-flash', 'deepseek-chat', 'deepseek-reasoner'],
+    transports: ['anthropic-messages'],
+    contextWindow: 1_000_000,
+    maxOutput: 384_000,
+    costPerMtok: { input: 0.14, output: 0.28 },
+    isFree: false,
+    supportsThinking: true,
+    supportsVision: false,
+    supportsTools: true,
+    supportsPromptCaching: false,
+    maxToolCalls: 128,
+    defaultRoles: ['router', 'selector', 'background', 'auxiliary'],
+  },
+  {
+    kind: 'text',
+    id: 'deepseek-v4-pro',
+    name: 'DeepSeek-V4-Pro',
+    provider: 'deepseek',
+    aliases: ['deepseek-v4-pro', 'deepseek-pro', 'ds-pro'],
+    transports: ['anthropic-messages'],
+    contextWindow: 1_000_000,
+    maxOutput: 384_000,
+    costPerMtok: { input: 1.74, output: 3.48 },
+    isFree: false,
+    supportsThinking: true,
+    supportsVision: false,
+    supportsTools: true,
+    supportsPromptCaching: false,
+    maxToolCalls: 128,
+    defaultRoles: ['main', 'coder'],
+  },
+  {
     kind: 'vision',
     id: 'glm-4v-flash',
     name: 'GLM-4V-Flash',
@@ -158,12 +206,14 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
 interface FindCatalogModelOptions {
   kind?: 'text' | 'vision'
   transport?: ModelTransport
+  provider?: ModelProvider
 }
 
-function filterCatalog({ kind, transport }: FindCatalogModelOptions): ModelCatalogEntry[] {
+function filterCatalog({ kind, transport, provider }: FindCatalogModelOptions): ModelCatalogEntry[] {
   return MODEL_CATALOG.filter((entry) => {
     if (kind && entry.kind !== kind) return false
     if (transport && !entry.transports.includes(transport)) return false
+    if (provider && entry.provider !== provider) return false
     return true
   })
 }
@@ -228,6 +278,15 @@ export function findCatalogModel(
     return candidates.find((entry) => entry.id === 'glm-4.7-flash') || null
   }
 
+  if (lower.includes('deepseek')) {
+    if (lower.includes('pro')) {
+      return candidates.find((entry) => entry.id === 'deepseek-v4-pro') || null
+    }
+    if (lower.includes('flash') || lower.includes('chat') || lower.includes('reasoner')) {
+      return candidates.find((entry) => entry.id === 'deepseek-v4-flash') || null
+    }
+  }
+
   if (lower.includes('4-flash') || (lower.includes('4') && lower.includes('flash') && !lower.includes('4.7') && !lower.includes('47'))) {
     return candidates.find((entry) => entry.id === 'glm-4-flash') || null
   }
@@ -256,4 +315,55 @@ export function getDefaultVisionModelId(override?: string): string {
     override || DEFAULT_VISION_MODEL,
     { kind: 'vision', transport: 'native-chat-completions', fallback: DEFAULT_VISION_MODEL },
   )
+}
+
+export const MODEL_PRESETS: Record<ModelPreset, ModelPresetConfig> = {
+  'glm-default': {
+    provider: 'glm',
+    defaultModel: DEFAULT_MAIN_MODEL,
+    routerModel: DEFAULT_FAST_MODEL,
+    selectorModel: DEFAULT_FAST_MODEL,
+    backgroundModel: DEFAULT_FAST_MODEL,
+    coderModel: DEFAULT_CODER_MODEL,
+    auxiliaryModel: DEFAULT_AUX_MODEL,
+    fallbackModel: DEFAULT_FAST_MODEL,
+  },
+  'deepseek-hybrid': {
+    provider: 'deepseek',
+    defaultModel: 'deepseek-v4-pro',
+    routerModel: 'deepseek-v4-flash',
+    selectorModel: 'deepseek-v4-flash',
+    backgroundModel: 'deepseek-v4-flash',
+    coderModel: 'deepseek-v4-pro',
+    auxiliaryModel: 'deepseek-v4-flash',
+    fallbackModel: 'deepseek-v4-flash',
+  },
+  'deepseek-all-pro': {
+    provider: 'deepseek',
+    defaultModel: 'deepseek-v4-pro',
+    routerModel: 'deepseek-v4-pro',
+    selectorModel: 'deepseek-v4-pro',
+    backgroundModel: 'deepseek-v4-pro',
+    coderModel: 'deepseek-v4-pro',
+    auxiliaryModel: 'deepseek-v4-pro',
+    fallbackModel: 'deepseek-v4-pro',
+  },
+  'deepseek-all-flash': {
+    provider: 'deepseek',
+    defaultModel: 'deepseek-v4-flash',
+    routerModel: 'deepseek-v4-flash',
+    selectorModel: 'deepseek-v4-flash',
+    backgroundModel: 'deepseek-v4-flash',
+    coderModel: 'deepseek-v4-flash',
+    auxiliaryModel: 'deepseek-v4-flash',
+    fallbackModel: 'deepseek-v4-flash',
+  },
+}
+
+export function getModelPreset(preset: ModelPreset): ModelPresetConfig {
+  return MODEL_PRESETS[preset]
+}
+
+export function getDefaultPresetForProvider(provider: ModelProvider): ModelPreset {
+  return provider === 'deepseek' ? 'deepseek-hybrid' : 'glm-default'
 }

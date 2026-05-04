@@ -1,13 +1,19 @@
 // src/core/llm-client.ts
-// 统一 LLM 客户端 - 使用 @anthropic-ai/sdk 连接智谱 GLM
+// 统一 LLM 客户端 - 使用 Anthropic SDK 连接 GLM / DeepSeek Anthropic-compatible APIs
 
 import Anthropic from '@anthropic-ai/sdk'
 import { createLogger } from '../utils/logger'
-import { GLM_CONFIG, DEFAULT_MODEL, resolveModelName } from './model-config'
+import {
+  DEFAULT_MODEL,
+  inferProviderFromModel,
+  resolveModelName,
+  resolveTextApiConfig,
+} from './model-config'
 import { modelCapabilitiesManager, type ModelCapability } from './model-capabilities'
 import { analyzeTaskComplexity, parseThinkingOutput, type TaskComplexity } from './glm-extensions'
 import { MessageHistoryManager, type Message, toApiMessages } from './message-history'
 import { applyPromptCaching } from './prompt-cache'
+import { type ModelProvider } from './model-catalog'
 
 const logger = createLogger('llm-client')
 
@@ -42,6 +48,7 @@ export type ChatEvent =
  * LLM 客户端配置
  */
 export interface LLMClientConfig {
+  provider?: ModelProvider
   apiKey?: string
   baseURL?: string
   defaultModel?: string
@@ -54,35 +61,49 @@ export interface LLMClientConfig {
  */
 export class LLMClient {
   private client: Anthropic
+  private provider: ModelProvider
   private defaultModel: string
   private defaultMaxTokens: number
   private historyManager: MessageHistoryManager
 
   constructor(config: LLMClientConfig = {}) {
-    const apiKey = config.apiKey || GLM_CONFIG.apiKey
-    const baseURL = config.baseURL || GLM_CONFIG.baseURL
+    const defaultModel = config.defaultModel || DEFAULT_MODEL
+    const provider = config.provider || inferProviderFromModel(defaultModel)
+    const apiConfig = resolveTextApiConfig({
+      provider,
+      model: defaultModel,
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+    })
 
-    if (!apiKey) {
-      throw new Error('ZHIPU_API_KEY 或 ANTHROPIC_AUTH_TOKEN 环境变量未设置')
+    if (!apiConfig.apiKey) {
+      throw new Error('未配置文本 LLM API Key（支持 GLM 或 DeepSeek）')
     }
 
     this.client = new Anthropic({
-      apiKey,
-      baseURL,
+      apiKey: apiConfig.apiKey,
+      baseURL: apiConfig.baseURL,
     })
 
-    this.defaultModel = config.defaultModel || DEFAULT_MODEL
+    this.provider = apiConfig.provider
+    this.defaultModel = resolveModelName(defaultModel, {
+      fallback: defaultModel,
+      provider: this.provider,
+    })
     this.defaultMaxTokens = config.defaultMaxTokens || 16000
     this.historyManager = new MessageHistoryManager()
 
-    logger.info(`LLM 客户端已初始化，连接到 ${baseURL}`)
+    logger.info(`LLM 客户端已初始化，provider=${this.provider}, model=${this.defaultModel}, baseURL=${apiConfig.baseURL}`)
   }
 
   /**
    * 流式对话
    */
   async *chat(params: ChatParams): AsyncGenerator<ChatEvent> {
-    const modelId = resolveModelName(params.model)
+    const modelId = resolveModelName(params.model, {
+      fallback: this.defaultModel,
+      provider: this.provider,
+    })
     const capability = modelCapabilitiesManager.resolveModel(modelId)
 
     // 分析任务复杂度
@@ -123,11 +144,7 @@ export class LLMClient {
         requestParams.tools = params.tools
       }
 
-      // 添加 GLM 特殊参数（如果支持 thinking mode）
-      if (capability.supportsThinking && (complexity.level === 'complex' || complexity.level === 'research')) {
-        (requestParams as unknown as Record<string, unknown>).enable_thinking = true
-        logger.info('启用 GLM-5 thinking mode 用于复杂任务')
-      }
+      this.applyThinkingConfig(requestParams as unknown as Record<string, unknown>, capability, complexity)
 
       const stream = this.client.messages.stream(requestParams)
 
@@ -212,7 +229,10 @@ export class LLMClient {
     toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>
     usage: { inputTokens: number; outputTokens: number }
   }> {
-    const modelId = resolveModelName(params.model)
+    const modelId = resolveModelName(params.model, {
+      fallback: this.defaultModel,
+      provider: this.provider,
+    })
     const capability = modelCapabilitiesManager.resolveModel(modelId)
 
     // 分析任务复杂度
@@ -251,11 +271,7 @@ export class LLMClient {
       requestParams.tools = params.tools
     }
 
-    // 添加 GLM 特殊参数（如果支持 thinking mode）
-    if (capability.supportsThinking && (complexity.level === 'complex' || complexity.level === 'research')) {
-      (requestParams as unknown as Record<string, unknown>).enable_thinking = true
-      logger.info('启用 GLM-5 thinking mode 用于复杂任务')
-    }
+    this.applyThinkingConfig(requestParams as unknown as Record<string, unknown>, capability, complexity)
 
     const response = await this.client.messages.create(requestParams)
 
@@ -264,12 +280,15 @@ export class LLMClient {
     const toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
 
     for (const block of response.content) {
-      if (block.type === 'text') {
+      if (block.type === 'thinking') {
+        const thinkingText = (block as unknown as { thinking?: string }).thinking || ''
+        thinking = [thinking, thinkingText].filter(Boolean).join('\n').trim() || null
+      } else if (block.type === 'text') {
         // 检查是否包含 thinking 输出
         const parsed = parseThinkingOutput(block.text)
         content += parsed.response
         if (parsed.thinking) {
-          thinking = parsed.thinking
+          thinking = [thinking, parsed.thinking].filter(Boolean).join('\n').trim()
         }
       } else if (block.type === 'tool_use') {
         toolCalls.push({
@@ -310,6 +329,30 @@ export class LLMClient {
    */
   getModelCapability(modelId: string): ModelCapability | undefined {
     return modelCapabilitiesManager.getCapability(modelId)
+  }
+
+  private applyThinkingConfig(
+    requestParams: Record<string, unknown>,
+    capability: ModelCapability,
+    complexity: TaskComplexity,
+  ): void {
+    if (!capability.supportsThinking) return
+
+    const needsReasoning = complexity.level === 'complex' || complexity.level === 'research'
+
+    if (this.provider === 'deepseek') {
+      requestParams.thinking = { type: needsReasoning ? 'enabled' : 'disabled' }
+      if (needsReasoning) {
+        requestParams.output_config = { effort: complexity.level === 'research' ? 'max' : 'high' }
+        logger.info(`启用 DeepSeek thinking mode (${complexity.level})`)
+      }
+      return
+    }
+
+    if (needsReasoning) {
+      requestParams.enable_thinking = true
+      logger.info('启用 GLM thinking mode 用于复杂任务')
+    }
   }
 }
 

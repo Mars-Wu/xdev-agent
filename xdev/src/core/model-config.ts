@@ -1,13 +1,19 @@
 // src/core/model-config.ts
-// 文本模型配置：从统一模型目录派生
+// Provider-aware text and vision model configuration
 
-/**
- * 模型配置接口
- */
+import {
+  DEFAULT_MAIN_MODEL,
+  getModelCatalogEntry,
+  listTextCatalogModels,
+  resolveCatalogModelId,
+  type ModelPreset,
+  type ModelProvider,
+} from './model-catalog'
+
 export interface ModelConfig {
   id: string
   name: string
-  provider: 'glm'
+  provider: ModelProvider
   contextWindow: number
   maxOutput: number
   costPerMtok: {
@@ -17,11 +23,22 @@ export interface ModelConfig {
   aliases: string[]
 }
 
-import {
-  DEFAULT_MAIN_MODEL,
-  listTextCatalogModels,
-  resolveCatalogModelId,
-} from './model-catalog'
+export interface TextApiConfig {
+  provider: ModelProvider
+  baseURL: string
+  apiKey: string
+}
+
+export interface VisionApiConfig {
+  provider: 'glm'
+  endpoint: string
+  apiKey: string
+}
+
+export interface ResolveModelOptions {
+  fallback?: string
+  provider?: ModelProvider
+}
 
 export const AVAILABLE_MODELS: ModelConfig[] = listTextCatalogModels({
   transport: 'anthropic-messages',
@@ -35,43 +52,105 @@ export const AVAILABLE_MODELS: ModelConfig[] = listTextCatalogModels({
   aliases: entry.aliases,
 }))
 
-/**
- * GLM API 配置
- * 支持 ZHIPU_API_KEY 或 ANTHROPIC_AUTH_TOKEN 环境变量
- */
-export const GLM_CONFIG = {
-  baseURL:
-    process.env.ZHIPU_API_BASE_URL
-    || process.env.GLM_BASE_URL
-    || process.env.ANTHROPIC_BASE_URL
-    || 'https://open.bigmodel.cn/api/anthropic',
-  apiKey: process.env.ZHIPU_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || '',
-}
+const GLM_TEXT_BASE_URL = 'https://open.bigmodel.cn/api/anthropic'
+const DEEPSEEK_TEXT_BASE_URL = 'https://api.deepseek.com/anthropic'
+const GLM_VISION_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 
-/**
- * 默认模型
- */
 export const DEFAULT_MODEL = DEFAULT_MAIN_MODEL
 
-/**
- * 获取模型配置
- */
-export function getModelConfig(modelId: string): ModelConfig | undefined {
-  const resolvedId = resolveCatalogModelId(modelId, {
+export function inferProviderFromModel(modelId?: string): ModelProvider {
+  if (!modelId) return 'glm'
+  const entry = getModelCatalogEntry(modelId)
+  if (entry?.kind === 'text') return entry.provider
+
+  const resolved = resolveCatalogModelId(modelId, {
     kind: 'text',
     transport: 'anthropic-messages',
     fallback: DEFAULT_MODEL,
   })
+  const resolvedEntry = getModelCatalogEntry(resolved)
+  return resolvedEntry?.provider ?? 'glm'
+}
+
+export function getConfiguredTextProvider(defaultModel?: string): ModelProvider {
+  const configured = process.env.XDEV_LLM_PROVIDER?.trim().toLowerCase()
+  if (configured === 'glm' || configured === 'deepseek') {
+    return configured
+  }
+
+  if (process.env.XDEV_MODEL_PRESET) {
+    return inferProviderFromPreset(process.env.XDEV_MODEL_PRESET as ModelPreset)
+  }
+
+  if (defaultModel) {
+    return inferProviderFromModel(defaultModel)
+  }
+
+  if (process.env.DEEPSEEK_API_KEY && !process.env.ZHIPU_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+    return 'deepseek'
+  }
+
+  return 'glm'
+}
+
+function inferProviderFromPreset(preset: ModelPreset): ModelProvider {
+  return preset.startsWith('deepseek-') ? 'deepseek' : 'glm'
+}
+
+export function resolveTextApiConfig(options: {
+  provider?: ModelProvider
+  model?: string
+  apiKey?: string
+  baseURL?: string
+} = {}): TextApiConfig {
+  const provider = options.provider || getConfiguredTextProvider(options.model)
+  if (provider === 'deepseek') {
+    return {
+      provider,
+      baseURL: options.baseURL || process.env.XDEV_LLM_BASE_URL || process.env.DEEPSEEK_BASE_URL || DEEPSEEK_TEXT_BASE_URL,
+      apiKey: options.apiKey || process.env.XDEV_LLM_API_KEY || process.env.DEEPSEEK_API_KEY || '',
+    }
+  }
+
+  return {
+    provider: 'glm',
+    baseURL: options.baseURL
+      || process.env.XDEV_LLM_BASE_URL
+      || process.env.ZHIPU_API_BASE_URL
+      || process.env.GLM_BASE_URL
+      || process.env.ANTHROPIC_BASE_URL
+      || GLM_TEXT_BASE_URL,
+    apiKey: options.apiKey
+      || process.env.XDEV_LLM_API_KEY
+      || process.env.ZHIPU_API_KEY
+      || process.env.ANTHROPIC_AUTH_TOKEN
+      || '',
+  }
+}
+
+export function resolveVisionApiConfig(): VisionApiConfig {
+  return {
+    provider: 'glm',
+    endpoint: process.env.XDEV_VISION_BASE_URL || GLM_VISION_ENDPOINT,
+    apiKey: process.env.XDEV_VISION_API_KEY
+      || process.env.ZHIPU_API_KEY
+      || process.env.ANTHROPIC_AUTH_TOKEN
+      || '',
+  }
+}
+
+export const GLM_CONFIG = resolveTextApiConfig({ provider: 'glm' })
+
+export function getModelConfig(modelId: string, options: ResolveModelOptions = {}): ModelConfig | undefined {
+  const resolvedId = resolveModelName(modelId, options)
   return AVAILABLE_MODELS.find((m) => m.id === resolvedId)
 }
 
-/**
- * 解析模型名称（支持别名）
- */
-export function resolveModelName(input: string): string {
+export function resolveModelName(input: string, options: ResolveModelOptions = {}): string {
   return resolveCatalogModelId(input, {
     kind: 'text',
     transport: 'anthropic-messages',
-    fallback: DEFAULT_MODEL,
+    provider: options.provider,
+    fallback: options.fallback || DEFAULT_MODEL,
   })
 }

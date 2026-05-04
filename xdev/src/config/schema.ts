@@ -11,6 +11,8 @@ import {
   SecurityConfig,
   LogConfig,
   SessionContextConfig,
+  VALID_MODEL_PRESETS,
+  VALID_MODEL_PROVIDERS,
 } from '../config';
 
 /**
@@ -49,6 +51,14 @@ export const ModelConfigSchema = {
     }
 
     const config = value as Partial<ModelConfig>;
+
+    if (config.provider !== undefined && !VALID_MODEL_PROVIDERS.includes(config.provider)) {
+      errors.push({ path: 'model.provider', message: `provider 必须是: ${VALID_MODEL_PROVIDERS.join(', ')}` });
+    }
+
+    if (config.preset !== undefined && !VALID_MODEL_PRESETS.includes(config.preset)) {
+      errors.push({ path: 'model.preset', message: `preset 必须是: ${VALID_MODEL_PRESETS.join(', ')}` });
+    }
 
     // defaultModel 必须是非空字符串
     if (!config.defaultModel || typeof config.defaultModel !== 'string') {

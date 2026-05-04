@@ -1,6 +1,21 @@
-import { describe, expect, it } from 'vitest'
-import { resolveModelName } from './model-config'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  resolveModelName,
+  resolveTextApiConfig,
+  resolveVisionApiConfig,
+} from './model-config'
 import { ModelCapabilitiesManager } from './model-capabilities'
+
+const ORIGINAL_ENV = { ...process.env }
+
+afterEach(() => {
+  for (const key of Object.keys(process.env)) {
+    if (!(key in ORIGINAL_ENV)) {
+      delete process.env[key]
+    }
+  }
+  Object.assign(process.env, ORIGINAL_ENV)
+})
 
 describe('model resolution', () => {
   it('should preserve explicit glm-5.1', () => {
@@ -23,5 +38,31 @@ describe('model resolution', () => {
   it('should resolve explicit glm-5.1 capabilities', () => {
     const manager = new ModelCapabilitiesManager()
     expect(manager.resolveModel('glm-5.1').id).toBe('glm-5.1')
+  })
+
+  it('should preserve explicit deepseek-v4-pro', () => {
+    expect(resolveModelName('deepseek-v4-pro')).toBe('deepseek-v4-pro')
+  })
+
+  it('should resolve DeepSeek text API config from env', () => {
+    process.env.XDEV_LLM_PROVIDER = 'deepseek'
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key'
+
+    expect(resolveTextApiConfig({ model: 'deepseek-v4-pro' })).toMatchObject({
+      provider: 'deepseek',
+      baseURL: 'https://api.deepseek.com/anthropic',
+      apiKey: 'test-deepseek-key',
+    })
+  })
+
+  it('should keep vision config independent from text provider', () => {
+    process.env.XDEV_LLM_PROVIDER = 'deepseek'
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key'
+    process.env.ZHIPU_API_KEY = 'test-glm-key'
+
+    expect(resolveVisionApiConfig()).toMatchObject({
+      provider: 'glm',
+      apiKey: 'test-glm-key',
+    })
   })
 })

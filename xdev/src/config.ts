@@ -7,9 +7,14 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { createLogger } from './utils/logger';
 import {
+  DEFAULT_AUX_MODEL,
   DEFAULT_CODER_MODEL,
   DEFAULT_FAST_MODEL,
   DEFAULT_MAIN_MODEL,
+  getDefaultPresetForProvider,
+  getModelPreset,
+  type ModelPreset,
+  type ModelProvider,
 } from './core/model-catalog';
 
 const logger = createLogger('config');
@@ -31,6 +36,10 @@ const logger = createLogger('config');
  * XDEV_SELECTOR_MODEL / XDEV_BACKGROUND_MODEL / XDEV_CODER_MODEL 覆盖。
  */
 export interface ModelConfig {
+  /** 文本 LLM provider */
+  provider: ModelProvider;
+  /** 一键切换预设 */
+  preset: ModelPreset;
   /** 主 Agent 模型（Stage 2）*/
   defaultModel: string;
   /** 话题路由器模型（Stage 1）*/
@@ -46,6 +55,14 @@ export interface ModelConfig {
   fallbackModel?: string;
   maxTokens?: number;
 }
+
+export const VALID_MODEL_PROVIDERS: ModelProvider[] = ['glm', 'deepseek'];
+export const VALID_MODEL_PRESETS: ModelPreset[] = [
+  'glm-default',
+  'deepseek-hybrid',
+  'deepseek-all-pro',
+  'deepseek-all-flash',
+];
 
 /**
  * 超时配置
@@ -157,11 +174,15 @@ export interface XdevConfig {
 
 const DEFAULT_CONFIG: XdevConfig = {
   model: {
+    provider:        'glm',
+    preset:          'glm-default',
     defaultModel:    DEFAULT_MAIN_MODEL, // 主 Agent：OpenClaw/龙虾场景专项优化
     routerModel:     DEFAULT_FAST_MODEL, // 话题路由：免费，单次 JSON，指令遵循强
     selectorModel:   DEFAULT_FAST_MODEL, // 回复选择：免费，极简任务
     backgroundModel: DEFAULT_FAST_MODEL, // 后台记忆：异步，免费够用
     coderModel:      DEFAULT_CODER_MODEL, // 编程子 Agent：code plan 下实测更稳，当前账号会映射到旗舰 coding 模型
+    auxiliaryModel:  DEFAULT_AUX_MODEL,
+    fallbackModel:   DEFAULT_FAST_MODEL,
   },
   timeout: {
     apiTimeout: 120000,      // 2 分钟
@@ -239,9 +260,33 @@ class ConfigManager {
 
     // 3. 合并配置
     const config = this.mergeConfig(DEFAULT_CONFIG, fileConfig, envConfig);
+    config.model = this.resolveModelSettings(DEFAULT_CONFIG.model, fileConfig.model, envConfig.model);
 
     logger.debug('配置加载完成');
     return config;
+  }
+
+  private resolveModelSettings(
+    defaults: ModelConfig,
+    ...sources: Array<Partial<ModelConfig> | undefined>
+  ): ModelConfig {
+    const overrides = Object.assign({}, ...sources.filter(Boolean));
+    const presetProvider = overrides.preset ? getModelPreset(overrides.preset).provider : undefined;
+    const provider = overrides.provider || presetProvider || defaults.provider;
+    const requestedPreset = overrides.preset
+      || (provider !== defaults.provider ? getDefaultPresetForProvider(provider) : defaults.preset);
+    const effectivePreset = getModelPreset(requestedPreset).provider === provider
+      ? requestedPreset
+      : getDefaultPresetForProvider(provider);
+    const presetConfig = getModelPreset(effectivePreset);
+
+    return {
+      ...defaults,
+      ...presetConfig,
+      ...overrides,
+      provider,
+      preset: effectivePreset,
+    };
   }
 
   /**
@@ -268,13 +313,22 @@ class ConfigManager {
 
     // 模型配置（各流水线阶段可独立覆盖）
     const modelOverride: Partial<ModelConfig> = {};
+    if (process.env.XDEV_LLM_PROVIDER && VALID_MODEL_PROVIDERS.includes(process.env.XDEV_LLM_PROVIDER as ModelProvider)) {
+      modelOverride.provider = process.env.XDEV_LLM_PROVIDER as ModelProvider;
+    }
+    if (process.env.XDEV_MODEL_PRESET && VALID_MODEL_PRESETS.includes(process.env.XDEV_MODEL_PRESET as ModelPreset)) {
+      modelOverride.preset = process.env.XDEV_MODEL_PRESET as ModelPreset;
+    }
     if (process.env.XDEV_MODEL)           modelOverride.defaultModel    = process.env.XDEV_MODEL;
     if (process.env.XDEV_ROUTER_MODEL)    modelOverride.routerModel     = process.env.XDEV_ROUTER_MODEL;
     if (process.env.XDEV_SELECTOR_MODEL)  modelOverride.selectorModel   = process.env.XDEV_SELECTOR_MODEL;
     if (process.env.XDEV_BACKGROUND_MODEL) modelOverride.backgroundModel = process.env.XDEV_BACKGROUND_MODEL;
     if (process.env.XDEV_CODER_MODEL)      modelOverride.coderModel      = process.env.XDEV_CODER_MODEL;
+    if (process.env.XDEV_AUX_MODEL)        modelOverride.auxiliaryModel   = process.env.XDEV_AUX_MODEL;
+    if (process.env.XDEV_FALLBACK_MODEL)   modelOverride.fallbackModel    = process.env.XDEV_FALLBACK_MODEL;
+    if (process.env.XDEV_MAX_TOKENS)       modelOverride.maxTokens        = parseInt(process.env.XDEV_MAX_TOKENS, 10);
     if (Object.keys(modelOverride).length > 0) {
-      config.model = { ...DEFAULT_CONFIG.model, ...modelOverride };
+      config.model = this.resolveModelSettings(DEFAULT_CONFIG.model, modelOverride);
     }
 
     // 超时配置

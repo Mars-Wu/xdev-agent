@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:live:feishu": "tsx tests/live-feishu/run-live-suite.ts",
+    "benchmark:models": "tsx scripts/benchmark-models.ts",
     "doctor": "node dist/cli.js doctor",
     "smoke-check": "node dist/cli.js smoke-check",
     "export-status": "node dist/cli.js export-status"

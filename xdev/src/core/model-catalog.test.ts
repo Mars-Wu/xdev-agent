@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_MAIN_MODEL,
   DEFAULT_VISION_MODEL,
+  getDefaultPresetForProvider,
+  getModelPreset,
   listTextCatalogModels,
   resolveCatalogModelId,
 } from './model-catalog'
@@ -12,6 +14,8 @@ describe('model catalog', () => {
     expect(ids).toContain('glm-5-turbo')
     expect(ids).toContain('glm-5.1')
     expect(ids).toContain('glm-4-flash')
+    expect(ids).toContain('deepseek-v4-flash')
+    expect(ids).toContain('deepseek-v4-pro')
     expect(ids).not.toContain('glm-5v-turbo')
   })
 
@@ -29,5 +33,23 @@ describe('model catalog', () => {
       transport: 'native-chat-completions',
       fallback: DEFAULT_VISION_MODEL,
     })).toBe('glm-4v-flash')
+  })
+
+  it('should resolve DeepSeek compatibility aliases to the flash model', () => {
+    expect(resolveCatalogModelId('deepseek-chat', {
+      kind: 'text',
+      transport: 'anthropic-messages',
+      fallback: DEFAULT_MAIN_MODEL,
+    })).toBe('deepseek-v4-flash')
+  })
+
+  it('should expose a DeepSeek hybrid preset for one-shot switching', () => {
+    expect(getDefaultPresetForProvider('deepseek')).toBe('deepseek-hybrid')
+    expect(getModelPreset('deepseek-hybrid')).toMatchObject({
+      provider: 'deepseek',
+      defaultModel: 'deepseek-v4-pro',
+      routerModel: 'deepseek-v4-flash',
+      selectorModel: 'deepseek-v4-flash',
+    })
   })
 })

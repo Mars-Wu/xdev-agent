@@ -14,8 +14,9 @@ export type MessageRole = 'user' | 'assistant' | 'system'
  * 消息内容块
  */
 export interface ContentBlock {
-  type: 'text' | 'image' | 'tool_use' | 'tool_result'
+  type: 'text' | 'image' | 'thinking' | 'tool_use' | 'tool_result'
   text?: string
+  thinking?: string
   source?: {
     type: 'base64'
     media_type: string

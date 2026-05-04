@@ -289,6 +289,9 @@ export async function runAgentLoop(
 
     // 构建 ContentBlock[] 格式的 assistant 消息（混合 text + tool_use）
     const assistantContent: ContentBlock[] = [];
+    if (response.thinking) {
+      assistantContent.push({ type: 'thinking', thinking: response.thinking });
+    }
     if (response.content) {
       assistantContent.push({ type: 'text', text: response.content });
       if (!isLowSignalToolAcknowledgement(response.content) || !lastTextContent) {

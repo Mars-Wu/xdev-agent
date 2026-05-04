@@ -215,8 +215,18 @@ async function checkRuntimePaths(xdevHome: string): Promise<DoctorCheck> {
 }
 
 function checkRequiredEnv(env: Record<string, string>, envFile?: string): DoctorCheck {
-  const required = ['ZHIPU_API_KEY', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET']
-  const missing = required.filter(key => !env[key] || looksLikePlaceholder(env[key]))
+  const missing: string[] = []
+
+  const llmApiKey = env.XDEV_LLM_API_KEY || env.DEEPSEEK_API_KEY || env.ZHIPU_API_KEY || env.ANTHROPIC_AUTH_TOKEN
+  if (!llmApiKey || looksLikePlaceholder(llmApiKey)) {
+    missing.push('text-llm-api-key')
+  }
+  if (!env.FEISHU_APP_ID || looksLikePlaceholder(env.FEISHU_APP_ID)) {
+    missing.push('FEISHU_APP_ID')
+  }
+  if (!env.FEISHU_APP_SECRET || looksLikePlaceholder(env.FEISHU_APP_SECRET)) {
+    missing.push('FEISHU_APP_SECRET')
+  }
   return missing.length === 0
     ? {
         id: 'required-env',

@@ -29,6 +29,7 @@ import { createTopicTools } from './tools/topic-tools';
 import { triggerBackgroundPass, buildExecutionSummary, triggerMemoryExtraction } from './core/background-memory';
 import { startLintScheduler } from './core/memory-lint-scheduler';
 import { analyzeImage, detectMimeType } from './core/vision';
+import { resolveTextApiConfig } from './core/model-config';
 import { autoGenerateTitle } from './core/title-generator';
 import { executeClarify, setClarifyCallback } from './tools/clarify-tool';
 import { ChatSessionState } from './core/chat-session-state';
@@ -76,10 +77,10 @@ function parseClarifyToolResponse(payload: string): { userResponse?: string; err
 function validateConfig(): void {
   const missing: string[] = [];
 
-  // 检查 API Key（支持两种环境变量名）
-  const hasApiKey = process.env.ZHIPU_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN
+  // 检查文本 LLM API Key（支持 GLM / DeepSeek）
+  const hasApiKey = process.env.XDEV_LLM_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.ZHIPU_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN
   if (!hasApiKey) {
-    missing.push('ZHIPU_API_KEY 或 ANTHROPIC_AUTH_TOKEN (智谱 API Key)')
+    missing.push('文本 LLM API Key（XDEV_LLM_API_KEY / DEEPSEEK_API_KEY / ZHIPU_API_KEY / ANTHROPIC_AUTH_TOKEN）')
   }
 
   // 检查飞书配置
@@ -146,6 +147,10 @@ async function initializeDirectories(): Promise<void> {
 
 async function main() {
   const xdevConfig = configManager.getConfig();
+  const textApiConfig = resolveTextApiConfig({
+    provider: xdevConfig.model.provider,
+    model: xdevConfig.model.defaultModel,
+  });
   setLogLevel(xdevConfig.log.level);
 
   // 配置验证
@@ -183,12 +188,9 @@ async function main() {
 
   // 2. 初始化 LLM 客户端
   const llmClient = getLLMClient({
-    apiKey: process.env.ZHIPU_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
-    baseURL:
-      process.env.ZHIPU_API_BASE_URL
-      || process.env.GLM_BASE_URL
-      || process.env.ANTHROPIC_BASE_URL
-      || 'https://open.bigmodel.cn/api/anthropic',
+    provider: textApiConfig.provider,
+    apiKey: textApiConfig.apiKey,
+    baseURL: textApiConfig.baseURL,
     defaultModel: xdevConfig.model.defaultModel,
     defaultMaxTokens: 16000,
     timeout: config.timeout,

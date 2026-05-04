@@ -2,7 +2,7 @@
 
 xdev is a Feishu-first AI assistant for long-running engineering and operations work. It accepts messages from Feishu, executes tools against local resources, manages workflows and task graphs, and exports runtime state for debugging and review.
 
-The service is built around the Zhipu GLM API through an Anthropic-compatible endpoint and is packaged primarily for Linux + `systemd` deployments.
+The service uses an Anthropic-compatible text LLM interface and can now switch between **GLM** and **DeepSeek** for text models through configuration. Vision analysis remains on the GLM visual endpoint and is configured separately. The service is packaged primarily for Linux + `systemd` deployments.
 
 ## Core capabilities
 
@@ -77,6 +77,8 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
 Common optional settings:
 
 ```bash
+XDEV_LLM_PROVIDER=glm
+XDEV_MODEL_PRESET=glm-default
 GLM_BASE_URL=https://open.bigmodel.cn/api/anthropic
 FEISHU_USE_WEBSOCKET=true
 XDEV_HOME=/var/lib/xdev
@@ -84,6 +86,16 @@ XDEV_GATEWAY_PORT=18789
 XDEV_HOOKS_PORT=8081
 XDEV_LOG_LEVEL=info
 ```
+
+To switch the text stack to DeepSeek in one change:
+
+```bash
+XDEV_LLM_PROVIDER=deepseek
+XDEV_MODEL_PRESET=deepseek-hybrid
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+```
+
+`deepseek-hybrid` maps the main/coder roles to `deepseek-v4-pro` and the router/selector/background/auxiliary roles to `deepseek-v4-flash`. Vision remains separate and can keep using GLM through `XDEV_VISION_API_KEY`.
 
 After startup, verify the service:
 
@@ -118,6 +130,7 @@ npm run build
 npm test
 npm run test:integration
 npm run test:coverage
+npm run benchmark:models
 ```
 
 Live Feishu regression:

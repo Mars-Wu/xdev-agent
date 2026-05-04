@@ -1,10 +1,9 @@
 // src/core/auxiliary-client.ts
 // 辅助 LLM 客户端 — 用于轻量任务（压缩摘要、标题生成等）
-// 参考 Hermes agent/auxiliary_client.py（简化版：单模型+静默失败）
 
 import Anthropic from '@anthropic-ai/sdk'
 import { createLogger } from '../utils/logger'
-import { GLM_CONFIG } from './model-config'
+import { resolveTextApiConfig } from './model-config'
 import { DEFAULT_AUX_MODEL } from './model-catalog'
 import { configManager } from '../config'
 
@@ -35,11 +34,12 @@ class AuxiliaryClient {
   constructor() {
     const config = configManager.getModelConfig()
     this.model = config.auxiliaryModel ?? DEFAULT_AUX_MODEL
+    const apiConfig = resolveTextApiConfig({ provider: config.provider, model: this.model })
     this.client = new Anthropic({
-      apiKey: GLM_CONFIG.apiKey,
-      baseURL: GLM_CONFIG.baseURL,
+      apiKey: apiConfig.apiKey,
+      baseURL: apiConfig.baseURL,
     })
-    logger.debug(`辅助客户端初始化: model=${this.model}`)
+    logger.debug(`辅助客户端初始化: provider=${apiConfig.provider}, model=${this.model}`)
   }
 
   async chat(options: AuxChatOptions): Promise<AuxChatResult> {
@@ -55,7 +55,7 @@ class AuxiliaryClient {
       params.system = system
     }
 
-    // GLM 不支持 temperature 参数，忽略（避免 API 报错）
+    // 当前 Anthropic 兼容端点统一忽略 temperature，保持请求最小化
 
     const response = await this.client.messages.create(params)
     const content = response.content

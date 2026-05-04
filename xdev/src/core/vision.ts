@@ -1,13 +1,12 @@
 // src/core/vision.ts
 // 图片视觉分析：使用智谱原生 OpenAI 兼容 API（glm-5v-turbo）
-// 注意：Anthropic 兼容端点不支持视觉，必须走原生端点
+// 注意：文本 provider 可切换，但视觉仍单独走 GLM 原生端点
 
 import { createLogger } from '../utils/logger';
 import { getDefaultVisionModelId } from './model-catalog';
+import { resolveVisionApiConfig } from './model-config';
 
 const logger = createLogger('vision');
-
-const ZHIPU_VISION_API = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 
 function getVisionModel(): string {
   return getDefaultVisionModelId(process.env.XDEV_VISION_MODEL);
@@ -24,15 +23,29 @@ export async function analyzeImage(
   mediaType: string,
   userQuestion?: string,
 ): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_AUTH_TOKEN || process.env.ZHIPU_API_KEY;
-  if (!apiKey) {
+  const visionConfig = resolveVisionApiConfig();
+  if (!visionConfig.apiKey) {
     throw new Error('未配置 API Key，无法进行图片分析');
   }
+  return analyzeImageWithConfig(
+    visionConfig.endpoint,
+    visionConfig.apiKey,
+    imageBuffer,
+    mediaType,
+    userQuestion,
+  );
+}
 
+export async function analyzeImageWithConfig(
+  endpoint: string,
+  apiKey: string,
+  imageBuffer: Buffer,
+  mediaType: string,
+  userQuestion?: string,
+): Promise<string> {
   const b64 = imageBuffer.toString('base64');
   const dataUrl = `data:${mediaType};base64,${b64}`;
 
-  // 构建分析提示
   const prompt = userQuestion
     ? `请仔细分析这张图片，然后回答用户的问题：${userQuestion}\n\n请先描述图片内容，再回答问题。`
     : '请详细描述这张图片的内容，包括文字、数据、图表等所有可见信息。';
@@ -57,7 +70,7 @@ export async function analyzeImage(
     ],
   };
 
-  const response = await fetch(ZHIPU_VISION_API, {
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,

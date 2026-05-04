@@ -42,16 +42,37 @@ In practice, this means you can run an assistant in Feishu that can respond to p
 | `docs/` | Architecture notes, operational references, and supporting design documents |
 | `.github/copilot-instructions.md` | Repository-specific Copilot guidance kept for contributor tooling |
 
+## What you need before first run
+
+1. **A Linux host with `systemd`**
+2. **A text model provider**
+   - **GLM**: `ZHIPU_API_KEY`
+   - **DeepSeek**: `DEEPSEEK_API_KEY`
+3. **A Feishu custom app**
+   - bot capability enabled
+   - WebSocket event delivery enabled
+   - event subscription for `im.message.receive_v1`
+   - message read/send scopes for the chat flows you want to use
+4. **`lark-cli`** for Feishu-side setup, auth, and live testing
+
 ## Quick start
 
 ```bash
-git clone git@github.com:wuxiaoyu19900108/xdev_agent.git
-cd xdev_agent/xdev
+git clone git@github.com:Mars-Wu/xdev-agent.git
+cd xdev-agent/xdev
 sudo ./install-xdev.sh
 sudo editor /etc/xdev/environment
 sudo systemctl start xdev
 sudo xdev doctor --env-file /etc/xdev/environment
 ```
+
+The shortest path is:
+
+1. install xdev with `install-xdev.sh`
+2. fill Feishu app credentials in `/etc/xdev/environment`
+3. choose **either** GLM or DeepSeek for text models
+4. start the service and validate with `xdev doctor`
+5. use `lark-cli` to send a real Feishu message to the bot
 
 ## Start reading here
 
@@ -60,7 +81,7 @@ sudo xdev doctor --env-file /etc/xdev/environment
 - Feishu end-to-end validation: [`xdev/docs/FEISHU_E2E_TEST_CASES.md`](xdev/docs/FEISHU_E2E_TEST_CASES.md)
 - Architecture summary: [`docs/xdev-architecture.md`](docs/xdev-architecture.md)
 - Technical design: [`docs/xdev-technical-design.md`](docs/xdev-technical-design.md)
-- Feishu CLI workflow notes: [`docs/feishu-cli-guide.md`](docs/feishu-cli-guide.md)
+- Feishu CLI install/auth/test notes: [`docs/feishu-cli-guide.md`](docs/feishu-cli-guide.md)
 
 ## Development
 

@@ -43,14 +43,48 @@ SQLite state + export artifacts
 - Linux with `systemd` recommended
 - Node.js 18+
 - npm 9+
-- Zhipu API key
+- One text provider API key: **GLM** or **DeepSeek**
 - A Feishu custom app with bot and event permissions
+- `lark-cli` recommended for Feishu-side setup and live testing
+
+## Fastest setup path for new users
+
+If you want to get to a working Feishu bot quickly, do these in order:
+
+1. **Create a Feishu custom app**
+   - enable **Bot**
+   - enable **WebSocket event delivery**
+   - subscribe to `im.message.receive_v1`
+   - grant the IM scopes needed for message receive/send and any media flows you want
+2. **Install `lark-cli`**
+   ```bash
+   npm install -g @larksuite/cli
+   lark-cli config init --new
+   lark-cli auth login
+   lark-cli auth status --verify
+   ```
+3. **Install xdev**
+   ```bash
+   git clone git@github.com:Mars-Wu/xdev-agent.git
+   cd xdev-agent/xdev
+   sudo ./install-xdev.sh
+   ```
+4. **Pick a text model provider**
+   - **GLM** for the current default path
+   - **DeepSeek** if you want the DeepSeek text stack
+5. **Fill `/etc/xdev/environment`**
+6. **Start and verify**
+   ```bash
+   sudo systemctl start xdev
+   sudo xdev doctor --env-file /etc/xdev/environment
+   sudo journalctl -u xdev -f
+   ```
 
 ## Recommended installation: system service
 
 ```bash
-git clone git@github.com:wuxiaoyu19900108/xdev_agent.git
-cd xdev_agent/xdev
+git clone git@github.com:Mars-Wu/xdev-agent.git
+cd xdev-agent/xdev
 sudo ./install-xdev.sh
 sudo editor /etc/xdev/environment
 sudo systemctl start xdev
@@ -68,8 +102,22 @@ The installer prepares:
 
 ### Minimum required environment
 
+Choose one of these text-provider blocks.
+
+**Option A: GLM text**
+
 ```bash
 ZHIPU_API_KEY=your_zhipu_api_key_here
+FEISHU_APP_ID=cli_xxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+**Option B: DeepSeek text**
+
+```bash
+XDEV_LLM_PROVIDER=deepseek
+XDEV_MODEL_PRESET=deepseek-hybrid
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
 FEISHU_APP_ID=cli_xxxxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
 ```
@@ -79,7 +127,7 @@ Common optional settings:
 ```bash
 XDEV_LLM_PROVIDER=glm
 XDEV_MODEL_PRESET=glm-default
-GLM_BASE_URL=https://open.bigmodel.cn/api/anthropic
+ZHIPU_API_BASE_URL=https://open.bigmodel.cn/api/anthropic
 FEISHU_USE_WEBSOCKET=true
 XDEV_HOME=/var/lib/xdev
 XDEV_GATEWAY_PORT=18789
@@ -95,7 +143,11 @@ XDEV_MODEL_PRESET=deepseek-hybrid
 DEEPSEEK_API_KEY=your_deepseek_api_key_here
 ```
 
-`deepseek-hybrid` maps the main/coder roles to `deepseek-v4-pro` and the router/selector/background/auxiliary roles to `deepseek-v4-flash`. Vision remains separate and can keep using GLM through `XDEV_VISION_API_KEY`.
+`deepseek-hybrid` maps the main/coder roles to `deepseek-v4-pro` and the router/selector/background/auxiliary roles to `deepseek-v4-flash`.
+
+Keep the explicit `XDEV_MODEL`, `XDEV_ROUTER_MODEL`, `XDEV_SELECTOR_MODEL`, and similar role overrides **commented out unless you intentionally want to override the preset**. Otherwise a leftover GLM role override can silently defeat a DeepSeek preset.
+
+Vision remains separate and can keep using GLM through `XDEV_VISION_API_KEY`.
 
 After startup, verify the service:
 
@@ -109,8 +161,8 @@ sudo journalctl -u xdev -f
 ## Run from source
 
 ```bash
-git clone git@github.com:wuxiaoyu19900108/xdev_agent.git
-cd xdev_agent/xdev
+git clone git@github.com:Mars-Wu/xdev-agent.git
+cd xdev-agent/xdev
 npm install
 cp .env.example .env
 editor .env
@@ -199,6 +251,17 @@ These files are useful for diagnosing routing, memory, and task execution behavi
 | [`.env.example`](.env.example) | Local development environment sample |
 
 For a local long-running `systemd --user` service, prefer an external environment file such as `~/.config/xdev/environment` instead of keeping secrets in the repository checkout.
+
+## Feishu and `lark-cli`
+
+`xdev` can run without `lark-cli`, but in practice `lark-cli` is the fastest way to:
+
+- initialize Feishu app config locally
+- authenticate as a user for live testing
+- send benchmark messages to the bot
+- inspect chat history and verify replies
+
+See [`../docs/feishu-cli-guide.md`](../docs/feishu-cli-guide.md) for the quick install and auth flow.
 
 ## Boundaries and current focus
 

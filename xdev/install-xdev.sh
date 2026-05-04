@@ -50,9 +50,19 @@ fi
 # 5. Create the environment file
 if [ ! -f /etc/xdev/environment ]; then
     cat > /etc/xdev/environment << 'EOF'
-# GLM API (required)
-ZHIPU_API_KEY=your-key-here
+# Text LLM provider
+XDEV_LLM_PROVIDER=glm
+XDEV_MODEL_PRESET=glm-default
+
+# GLM text API (fill this block if you use GLM for text)
+ZHIPU_API_KEY=your-zhipu-api-key-here
 ZHIPU_API_BASE_URL=https://open.bigmodel.cn/api/anthropic
+
+# DeepSeek text API (fill this block if you use DeepSeek for text)
+# XDEV_LLM_PROVIDER=deepseek
+# XDEV_MODEL_PRESET=deepseek-hybrid
+# DEEPSEEK_API_KEY=your-deepseek-api-key-here
+# DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic
 
 # Feishu settings (required)
 FEISHU_APP_ID=your-app-id
@@ -65,20 +75,32 @@ XDEV_DB=/var/lib/xdev/data/xdev.db
 XDEV_GATEWAY_HOST=127.0.0.1
 XDEV_GATEWAY_PORT=18789
 XDEV_HOOKS_PORT=8081
-XDEV_MODEL=glm-5-turbo
-XDEV_ROUTER_MODEL=glm-4.7-flash
-XDEV_SELECTOR_MODEL=glm-4.7-flash
-XDEV_BACKGROUND_MODEL=glm-4.7-flash
+# Role mapping normally comes from XDEV_MODEL_PRESET.
+# Uncomment only if you intentionally want to override the preset:
+# XDEV_MODEL=glm-5-turbo
+# XDEV_ROUTER_MODEL=glm-4.7-flash
+# XDEV_SELECTOR_MODEL=glm-4.7-flash
+# XDEV_BACKGROUND_MODEL=glm-4.7-flash
+# XDEV_CODER_MODEL=glm-5
 XDEV_TIMEOUT=120000
 XDEV_MAX_RETRIES=3
 XDEV_RETRY_DELAY=1000
 XDEV_LOG_LEVEL=info
 XDEV_API_TOKEN=change-me-for-test-endpoints
 
+# Vision stays on GLM by default even when text uses DeepSeek
+# XDEV_VISION_API_KEY=your-zhipu-api-key-here
+# XDEV_VISION_BASE_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
+# XDEV_VISION_MODEL=glm-5v-turbo
+
 # Notes
 # 1. Enable bot capability and long connections in the Feishu app
 # 2. Subscribe to im.message.receive_v1
-# 3. If you expose /test/message or similar endpoints, replace XDEV_API_TOKEN with a strong random value
+# 3. Install lark-cli if you want fast Feishu-side setup and live testing:
+#      npm install -g @larksuite/cli
+#      lark-cli config init --new
+#      lark-cli auth login
+# 4. If you expose /test/message or similar endpoints, replace XDEV_API_TOKEN with a strong random value
 
 # Compatibility aliases (optional)
 # ANTHROPIC_AUTH_TOKEN=your-key-here
@@ -146,25 +168,31 @@ echo ""
 echo "=== Installation complete ==="
 echo ""
 echo "Next steps:"
-echo "1. Edit /etc/xdev/environment with your Feishu and GLM settings"
-echo "   - ZHIPU_API_KEY: Zhipu API key"
+echo "1. Edit /etc/xdev/environment with your Feishu and text-model settings"
+echo "   - Choose GLM or DeepSeek for text"
+echo "   - ZHIPU_API_KEY or DEEPSEEK_API_KEY"
 echo "   - FEISHU_APP_ID: Feishu app ID"
 echo "   - FEISHU_APP_SECRET: Feishu app secret"
-echo "   - See xdev/docs/GUIDE.md for Feishu bot and long-connection setup"
+echo "   - See xdev/docs/GUIDE.md for Feishu bot, lark-cli, and provider setup"
 echo ""
-echo "2. Start the service"
+echo "2. Optional but recommended: install and configure lark-cli"
+echo "   npm install -g @larksuite/cli"
+echo "   lark-cli config init --new"
+echo "   lark-cli auth login"
+echo ""
+echo "3. Start the service"
 echo "   sudo systemctl start xdev"
 echo ""
-echo "3. Check service status and logs"
+echo "4. Check service status and logs"
 echo "   sudo systemctl status xdev"
 echo "   sudo journalctl -u xdev -f"
 echo ""
-echo "4. Run diagnostics and smoke checks"
+echo "5. Run diagnostics and smoke checks"
 echo "   sudo xdev doctor --env-file /etc/xdev/environment"
 echo "   sudo xdev smoke-check --env-file /etc/xdev/environment"
 echo ""
-echo "5. Export runtime status"
+echo "6. Export runtime status"
 echo "   sudo xdev export-status"
 echo ""
-echo "6. Check the health endpoint"
+echo "7. Check the health endpoint"
 echo "   curl http://localhost:8081/health"

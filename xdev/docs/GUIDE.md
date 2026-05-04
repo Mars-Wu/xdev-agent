@@ -19,8 +19,9 @@ Recommended order:
 - Linux with `systemd`
 - Node.js 18+
 - npm 9+
-- Zhipu API key
+- One text provider API key: GLM or DeepSeek
 - Feishu custom app
+- `lark-cli` recommended for setup and live validation
 
 ## Feishu app setup
 
@@ -31,18 +32,42 @@ At minimum, enable:
 - event subscription for `im.message.receive_v1`
 - send/receive permissions for the message types you plan to use
 
+Recommended IM-related scopes for first-time setup:
+
+- `im:message`
+- `im:message:readonly`
+- `im:message.send_as_user`
+- `im:chat:read`
+- `im:chat:update` if you want chat management flows
+- media/resource scopes if you want image or file tests
+
+## Install and authenticate `lark-cli`
+
+```bash
+npm install -g @larksuite/cli
+lark-cli config init --new
+lark-cli auth login
+lark-cli auth status --verify
+```
+
+Use `lark-cli` to:
+
+- confirm Feishu app config is valid
+- send live messages to the xdev bot
+- inspect the chat after a benchmark or regression test
+
 ## Install as a service
 
 ```bash
-git clone git@github.com:wuxiaoyu19900108/xdev_agent.git
-cd xdev_agent/xdev
+git clone git@github.com:Mars-Wu/xdev-agent.git
+cd xdev-agent/xdev
 sudo ./install-xdev.sh
 sudo editor /etc/xdev/environment
 sudo systemctl start xdev
 sudo systemctl status xdev
 ```
 
-Minimum environment values:
+Minimum environment values for **GLM text**:
 
 ```bash
 ZHIPU_API_KEY=your_zhipu_api_key_here
@@ -50,16 +75,34 @@ FEISHU_APP_ID=cli_xxxxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
+Minimum environment values for **DeepSeek text**:
+
+```bash
+XDEV_LLM_PROVIDER=deepseek
+XDEV_MODEL_PRESET=deepseek-hybrid
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+FEISHU_APP_ID=cli_xxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
 Common optional values:
 
 ```bash
-GLM_BASE_URL=https://open.bigmodel.cn/api/anthropic
+XDEV_LLM_PROVIDER=glm
+XDEV_MODEL_PRESET=glm-default
+ZHIPU_API_BASE_URL=https://open.bigmodel.cn/api/anthropic
+DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic
 FEISHU_USE_WEBSOCKET=true
 XDEV_HOME=/var/lib/xdev
 XDEV_GATEWAY_PORT=18789
 XDEV_HOOKS_PORT=8081
 XDEV_LOG_LEVEL=info
 ```
+
+Important:
+
+- If you use a preset such as `deepseek-hybrid`, keep explicit role overrides like `XDEV_MODEL` and `XDEV_ROUTER_MODEL` commented out unless you intentionally want custom routing.
+- xdev currently uses **DeepSeek for text** and **GLM for vision** as separate configuration paths. DeepSeek's documented Anthropic-compatible path does not currently support `image` or `document` content blocks.
 
 ## Verify the service
 
@@ -87,6 +130,7 @@ If you run Xdev as a local `systemd --user` service, prefer an external environm
 
 - verify Feishu app credentials and scopes
 - confirm WebSocket mode is enabled
+- confirm the chosen text provider key is valid (`ZHIPU_API_KEY` or `DEEPSEEK_API_KEY`)
 - check `journalctl` for provider or permission errors
 - run `xdev doctor` before deeper debugging
 - use [`FEISHU_E2E_TEST_CASES.md`](FEISHU_E2E_TEST_CASES.md) when the service is running but chat behavior looks wrong
